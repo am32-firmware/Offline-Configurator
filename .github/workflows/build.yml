@@ -1,0 +1,185 @@
+name: Build SerialPortConnector
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install Qt
+      uses: jurplel/install-qt-action@v4
+      with:
+        version: '6.6.2'
+        host: 'windows'
+        target: 'desktop'
+        arch: 'win64_mingw'
+        modules: 'qtserialport'
+        tools: 'tools_mingw90'
+        cache: true
+
+    - name: Build
+      shell: cmd
+      run: |
+        set PATH=%IQTA_TOOLS%\mingw1120_64\bin;%PATH%
+        mkdir build
+        cd build
+        qmake ..\SerialPortConnector.pro CONFIG+=release
+        mingw32-make -j4
+
+    - name: Deploy
+      shell: cmd
+      run: |
+        mkdir deploy
+        copy build\release\SerialPortConnector.exe deploy\
+        set PATH=%IQTA_TOOLS%\mingw1120_64\bin;%PATH%
+        windeployqt --release deploy\SerialPortConnector.exe
+
+    - name: Upload Windows artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: SerialPortConnector-Windows
+        path: deploy/
+        
+  build-linux:
+    runs-on: ubuntu-22.04  # Use 22.04 for glibc 2.35 compatibility
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          build-essential \
+          libgl1-mesa-dev \
+          libxcb1-dev \
+          libxcb-glx0-dev \
+          libxcb-icccm4-dev \
+          libxcb-image0-dev \
+          libxcb-keysyms1-dev \
+          libxcb-randr0-dev \
+          libxcb-render-util0-dev \
+          libxcb-shape0-dev \
+          libxcb-shm0-dev \
+          libxcb-sync-dev \
+          libxcb-xfixes0-dev \
+          libxcb-xinerama0-dev \
+          libxcb-xkb-dev \
+          libxcb-cursor-dev \
+          libxkbcommon-dev \
+          libxkbcommon-x11-dev \
+          libfontconfig1-dev \
+          libfreetype6-dev \
+          libpulse-dev \
+          libudev-dev \
+          fuse \
+          libfuse2 \
+          file
+
+    - name: Install Qt
+      uses: jurplel/install-qt-action@v4
+      with:
+        version: '6.6.2'
+        host: 'linux'
+        target: 'desktop'
+        arch: 'gcc_64'
+        modules: 'qtserialport'
+        cache: true
+
+    - name: Build
+      run: |
+        mkdir build && cd build
+        qmake ../SerialPortConnector.pro CONFIG+=release
+        make -j$(nproc)
+
+    - name: Download linuxdeploy
+      run: |
+        wget -q https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
+        wget -q https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/continuous/linuxdeploy-plugin-qt-x86_64.AppImage
+        chmod +x linuxdeploy*.AppImage
+
+    - name: Create AppImage
+      env:
+        QMAKE: ${{ env.QT_ROOT_DIR }}/bin/qmake
+      run: |
+        # Set up environment
+        export LD_LIBRARY_PATH=$QT_ROOT_DIR/lib:$LD_LIBRARY_PATH
+        export PATH=$QT_ROOT_DIR/bin:$PATH
+
+        # Create AppDir structure
+        mkdir -p AppDir/usr/bin
+        mkdir -p AppDir/usr/share/applications
+        mkdir -p AppDir/usr/share/icons/hicolor/256x256/apps
+
+        # Copy executable
+        cp build/SerialPortConnector AppDir/usr/bin/
+
+        # Create .desktop file
+        cat > AppDir/usr/share/applications/SerialPortConnector.desktop << 'EOF'
+        [Desktop Entry]
+        Type=Application
+        Name=SerialPortConnector
+        Exec=SerialPortConnector
+        Icon=SerialPortConnector
+        Categories=Utility;
+        EOF
+
+        # Create placeholder icon
+        echo -e 'P6\n256 256\n255' > AppDir/usr/share/icons/hicolor/256x256/apps/SerialPortConnector.png
+        convert -size 256x256 xc:steelblue AppDir/usr/share/icons/hicolor/256x256/apps/SerialPortConnector.png 2>/dev/null || true
+
+        # Extract linuxdeploy tools (avoids FUSE issues in CI)
+        ./linuxdeploy-x86_64.AppImage --appimage-extract
+        mv squashfs-root linuxdeploy
+        ./linuxdeploy-plugin-qt-x86_64.AppImage --appimage-extract
+        mv squashfs-root linuxdeploy-plugin-qt
+
+        # Run linuxdeploy with Qt plugin
+        export PATH="$(pwd)/linuxdeploy-plugin-qt/usr/bin:$PATH"
+        ./linuxdeploy/AppRun \
+          --appdir AppDir \
+          --executable build/SerialPortConnector \
+          --desktop-file AppDir/usr/share/applications/SerialPortConnector.desktop \
+          --plugin qt \
+          --output appimage
+
+    - name: Upload Linux artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: SerialPortConnector-Linux
+        path: SerialPortConnector*.AppImage
+
+  create-release:
+    needs: [build-windows, build-linux]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+
+    steps:
+    - name: Download all artifacts
+      uses: actions/download-artifact@v4
+
+    - name: Package Windows artifact
+      run: |
+        cd SerialPortConnector-Windows
+        zip -r ../SerialPortConnector-Windows.zip .
+
+    - name: Create Release
+      uses: softprops/action-gh-release@v1
+      with:
+        files: |
+          SerialPortConnector-Windows.zip
+          SerialPortConnector-Linux/*.AppImage
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
