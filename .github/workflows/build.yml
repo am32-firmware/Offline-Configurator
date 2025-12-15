@@ -161,8 +161,40 @@ jobs:
         name: SerialPortConnector-Linux
         path: SerialPortConnector*.AppImage
 
+  build-macos:
+    runs-on: macos-latest  # ARM64 runner, builds universal binary
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install Qt
+      uses: jurplel/install-qt-action@v4
+      with:
+        version: '5.15.2'
+        host: 'mac'
+        target: 'desktop'
+        cache: true
+
+    - name: Build
+      run: |
+        mkdir build && cd build
+        qmake ../SerialPortConnector.pro CONFIG+=release
+        make -j$(sysctl -n hw.ncpu)
+
+    - name: Deploy
+      run: |
+        cd build
+        macdeployqt SerialPortConnector.app -dmg
+        mv SerialPortConnector.dmg ../SerialPortConnector-macOS.dmg
+
+    - name: Upload macOS artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: SerialPortConnector-macOS
+        path: SerialPortConnector-macOS.dmg
+
   create-release:
-    needs: [build-windows, build-linux]
+    needs: [build-windows, build-linux, build-macos]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/')
 
@@ -181,5 +213,6 @@ jobs:
         files: |
           SerialPortConnector-Windows.zip
           SerialPortConnector-Linux/*.AppImage
+          SerialPortConnector-macOS/*.dmg
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
