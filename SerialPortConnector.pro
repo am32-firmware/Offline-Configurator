@@ -4,6 +4,12 @@ QT += serialport
 
 CONFIG += c++11
 
+CONFIG += release
+
+CONFIG(release, debug|release) {
+    CONFIG += static
+}
+
 # The following define makes your compiler emit warnings if you use
 # any Qt feature that has been marked deprecated (the exact warnings
 # depend on your compiler). Please consult the documentation of the
@@ -20,6 +26,7 @@ SOURCES += \
     bluejaymelody.cpp \
     fourwayif.cpp \
     main.cpp \
+    music.cpp \
     widget.cpp
 
 HEADERS += \
@@ -27,6 +34,7 @@ HEADERS += \
     bluejaymelody.h \
     defaults.h \
     fourwayif.h \
+    music.h \
     widget.h
 
 FORMS += \

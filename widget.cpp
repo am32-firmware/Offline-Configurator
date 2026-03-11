@@ -3,7 +3,8 @@
 #include "defaults.h"
 #include "fourwayif.h"
 #include "ui_widget.h"
-#include "bluejaymelody.h"
+//#include "bluejaymelody.h"
+#include "music.h"
 
 #include <QComboBox>
 #include <QFile>
@@ -26,9 +27,9 @@ Widget::Widget(QWidget *parent)
       bluejay_tune(new QByteArray), eeprom_buffer(new QByteArray),
       music_buffer(new QByteArray) {
   ui->setupUi(this);
-  ui->tabWidget->removeTab(4); // todo make these visible
-  ui->tabWidget->removeTab(4);   // remove led tab for now
-  this->setWindowTitle("ESC Config Tool 1.93 - for firmware version 2.19 and higher");
+  //ui->tabWidget->removeTab(4); // todo make these visible
+  ui->tabWidget->removeTab(5);   // remove led tab for now
+  this->setWindowTitle("ESC Config Tool 1.94 - for firmware version 2.19 and higher");
 
   serialInfoStuff();
 
@@ -48,8 +49,8 @@ Widget::Widget(QWidget *parent)
   hideEEPROMSettings(true);
   ui->writeBinary->setHidden(true);
   //ui->VerifyFlash->setHidden(true);
-  ui->MusicTextEdit->setHidden(true);
-  ui->uploadMusic->setHidden(true);
+  //ui->MusicTextEdit->setHidden(false);
+  //ui->uploadMusic->setHidden(false);
 
   ui->passthoughButton->setHidden(true);
   ui->endPassthrough->setHidden(true);
@@ -134,7 +135,7 @@ void Widget::connectSerial() {
     ui->tabWidget->insertTab(2, ui->tab_3, "Motor Control");
     showSingleMotor(false);
     four_way->direct = false;
-    m_serial->setBaudRate(m_serial->Baud19200);
+    m_serial->setBaudRate(m_serial->Baud115200);
   }
 
   m_serial->setPortName(ui->serialSelectorBox->currentText());
@@ -294,8 +295,7 @@ if(data.size() != 0){
 
           if (data[1] == (char)0x37) {
             hideESCSettings(false);
-
-            //               qInfo("ID 6: %d",data[6]);
+            // qInfo("ID 6: %d",data[6]);
             if (data[6] == (char)0x2b) {
               qInfo("G071ESC_2KB_PAGE");
               four_way->memory_divider_required_four = true;
@@ -525,8 +525,9 @@ QByteArray Widget::convertFromHex() {
     }
     inputHex.close();
   }
-
+//QFileDialog::saveFileContent(rawData, "raw.bin");
   return rawData;
+
 }
 
 void Widget::resetESC() {
@@ -567,7 +568,7 @@ void Widget::on_writeBinary_clicked() {
   } else {
     writeData(four_way->makeFourWayWriteCommand(eeprom_out, 48,
                                                 four_way->eeprom_address));
-    chunk_size = 128;
+    chunk_size = 256;
     m_serial->waitForBytesWritten(500);
     while (m_serial->waitForReadyRead(1000)) {
     }
@@ -642,6 +643,8 @@ void Widget::on_writeBinary_clicked() {
             sendDirect(onetwentyeight, onetwentyeight.size(),
                        (4096 + (i * 2048) + (j * chunk_size)));
           } else {
+            qInfo("adress: %d",
+                  4096 + (i * 2048) + (j * chunk_size));
             writeData(four_way->makeFourWayWriteCommand(
                 onetwentyeight, onetwentyeight.size(),
                 4096 + (i * 2048) +
@@ -650,9 +653,11 @@ void Widget::on_writeBinary_clicked() {
         }
 
         if (!four_way->direct) {
-          m_serial->waitForBytesWritten(200);
+          while(m_serial->waitForBytesWritten(200)){
 
-          while (m_serial->waitForReadyRead(100)) {
+          }
+       //   m_serial->waitForBytesWritten(200);
+          while (m_serial->waitForReadyRead(200)) {
           }
           readData();
         }
@@ -935,8 +940,8 @@ bool Widget::connectMotor(uint8_t motor) {
     }
 
     writeData(RL->readFlash(48 + 32));
-    m_serial->waitForBytesWritten(500);
-    while (m_serial->waitForReadyRead(500)) {
+    m_serial->waitForBytesWritten(200);
+    while (m_serial->waitForReadyRead(200)) {
     }
 
     QByteArray flash = m_serial->readAll();
@@ -983,7 +988,7 @@ bool Widget::connectMotor(uint8_t motor) {
 
       writeData(four_way->makeFourWayReadCommand(buffer_length + 32,
                                                  four_way->eeprom_address - 32));
-      m_serial->waitForBytesWritten(200);
+      m_serial->waitForBytesWritten(300);
       while (m_serial->waitForReadyRead(300)) {
       }
       qInfo("reads");
@@ -1407,8 +1412,8 @@ void Widget::on_initMotor4_clicked() {
 void Widget::sendDirect(const QByteArray sendbuffer, uint16_t buffer_size,
                         uint16_t address) {
   writeData(RL->setAddress(address)); // set address
-  m_serial->waitForBytesWritten(25);
-  while (m_serial->waitForReadyRead(50)) {
+  m_serial->waitForBytesWritten(10);
+  while (m_serial->waitForReadyRead(20)) {
   }
   QByteArray data = m_serial->readAll();
   if (data[data.size() - 1] == char(0x30)) {
@@ -1418,11 +1423,11 @@ void Widget::sendDirect(const QByteArray sendbuffer, uint16_t buffer_size,
     return;
   }
   writeData(RL->setBufferSize(buffer_size)); // set buffer size
- m_serial->waitForBytesWritten(25);
-  while (m_serial->waitForReadyRead(50)) {
+ m_serial->waitForBytesWritten(10);
+  while (m_serial->waitForReadyRead(20)) {
   }
   writeData(RL->sendBuffer(sendbuffer)); // send buffer
-  m_serial->waitForBytesWritten(75);
+  m_serial->waitForBytesWritten(20);
   while (m_serial->waitForReadyRead(75)) {
   }
   QByteArray data2 = m_serial->readAll();
@@ -1433,8 +1438,8 @@ void Widget::sendDirect(const QByteArray sendbuffer, uint16_t buffer_size,
     return;
   }
   writeData(RL->writeFlash()); // send write command
-  m_serial->waitForBytesWritten(25);
-  while (m_serial->waitForReadyRead(50)) {
+  m_serial->waitForBytesWritten(10);
+  while (m_serial->waitForReadyRead(30)) {
   }
   QByteArray data3 = m_serial->readAll();
   if (data3[data3.size() - 1] == char(0x30)) {
@@ -1538,6 +1543,7 @@ void Widget::hide4wayButtons(bool b) {
   ui->fourWayFrame->setHidden(b);
   ui->connectFrameInputPage->setHidden(b);
   ui->flashMotorsFrame->setHidden(b);
+ // ui->tunesFrame->setHidden(b);
   //   ui->flashFourwayFrame->setHidden(b);
 }
 
@@ -1550,6 +1556,9 @@ void Widget::hideEEPROMSettings(bool b) {
   ui->eepromFrame->setHidden(b);
   ui->inputservoFrame->setHidden(b);
   ui->flashFourwayFrame->setHidden(b);
+  ui->MusicTextEdit->setHidden(b);
+  ui->uploadMusic->setHidden(b);
+  ui->tunesFrame->setHidden(b);
 
   //  qInfo(" slot working");
 }
@@ -1877,221 +1886,57 @@ int Widget::getshift(int some_number)
   return pos;
 }
 
-// void Widget::on_uploadMusic_clicked()
-//{
-//  parseRTTL('Back to the Future:d=16,o=5,b=200:4g.,p,4c.,p,2f#.,p,g.,p,a.,p,8g,p,8e,p,8c,p,4f#,p,g.,p,a.,p,8g.,p,8d.,p,8g.,p,8d.6,p,4d.6,p,4c#6,p,b.,p,c#.6,p,2d.6')
-//}
-//{
-//    enum notes{ C, CS, D, DS, E, F, FS, G , GS, A, AS, B, P  }note;
-//    QByteArray music_hex;
 
-//   uint8_t octave =0;
-//   uint8_t duration = 0;
-//   uint8_t pause;
-//   uint8_t newnote;
+void Widget::on_uploadMusic_clicked()
+{
+   QString music = ui->MusicTextEdit->toPlainText();
+   uint8_t bytes[128];
+   uint16_t gen_length = ui->genLengthSpinbox->value();
+   uint16_t newbpm =  (12*240) / gen_length;
 
-//   uint8_t element;
+   blheli32_to_bluejay_array(music,newbpm,bytes);
 
-//   //  const QByteArray data = ui->MusicTextEdit->toPlainText().toLocal8Bit();
-//    QString music = ui->MusicTextEdit->toPlainText();
-//    for( int i = 0; i < music.length(); i ++){
-//        if(music[i].isLetter()){
-//           if(music[i] == "P"){     //  80
-//            newnote = P;
-//            octave =0;
-//            if(music[i+2].isLetter()){
-//            duration = getshift(music[i+1].digitValue())-1;
-//            }
-//            if(music[i+2].isDigit()){
-//                if(music[i+3].isLetter()){
-//                  QString s;
-//                  s.append(music[i+1]);
-//                  s.append(music[i+2]);
-//                duration = getshift(s.toInt())-1;
-//                }
+  // for( int i = 0; i < 128; i ++){
+  //  qInfo(" output integer %i", bytes[i]+128);
+  //  }
 
-//                if(music[i+3].isDigit()){
-//                    if(music[i+4].isLetter()){
-//                     QString s;
-//                     s.append(music[i+1]);
-//                     s.append(music[i+2]);
-//                     s.append(music[i+3]);
-//                    duration = getshift(s.toInt())-1;
-//                    }
-//                }
+   QByteArray eeprom_music_out;
+   uint16_t buffersize2 = 128;
+ //  qInfo(" buffersize: %i", buffersize2);
 
-//            }
+           for (int i = 0; i < 48; i++) {
+               eeprom_music_out.append((char)eeprom_buffer->at(i));
+           }
+            for (int i = 0; i < buffersize2; i++) {
+                eeprom_music_out.append((char)bytes[i]);
 
-//           }else{
-//        //       QString test =QChar(music[i]);
-//         //      qInfo(test);
+            }
+            eeprom_music_out[50]= (255 - (ui->genIntervalSpinbox->value()));
+            while (eeprom_music_out.size() % 4 != 0)
+                eeprom_music_out.append('\xFF');
 
-//               switch (music[i].unicode())
-//              {
-//                   case 65:
-//                     newnote = A;
-//                     break;
-//                   case 66:
-//                    newnote = B;
-//                     break;
-//                case 67:       // C
-//                 newnote = C;
-//                 break;
-//               case 68:
-//                 newnote = D;
-//                 break;
-//               case 69:
-//                 newnote = E;
-//                 break;
-//               case 70:
-//                 newnote = F;
-//                 break;
-//               case 71:
-//                 newnote = G;
-//                 break;
-//               }
+            uint16_t totalbuffersize = eeprom_music_out.size();
+//qInfo(" totalbuffersize: %i", totalbuffersize);
+       four_way->ack_required = true;
 
-//               if(music[i+1] == "#"){
-//                 newnote++;
-//                 qInfo("SHARP :  %d ", newnote);
-//                 octave = music[i+2].digitValue()-4;
-//                 qInfo("octave :  %d ", music[i+2].digitValue()-4);
-//                 if(music[i+3].isDigit()){
-//                 duration = getshift(music[i+3].digitValue())-1; // need
-//                 square root of this!!! qInfo("Duration :  %d ",
-//                 getshift(music[i+3].digitValue()));
-//                   }
-//               }else{
-//               octave = music[i+1].digitValue()-4;
-//                qInfo("octave :  %d ", music[i+1].digitValue());
-//               if(music[i+2].isDigit()){
-//                duration = getshift(music[i+2].digitValue())-1;
-//                qInfo("Duration :  %d ", getshift(music[i+2].digitValue()));
-//               }
-//               }
-//           }
-//          qInfo("Music Note 1 :  %d ", newnote);
-//          element = newnote << 4 | octave << 2 | duration;
-//    //      element = element + (octave << 2);
-//    //      element = duration;
-//          qInfo("ELEMENT :  %d ", element);
-//          music_hex.append(element);
-//        }
-//    }
-//    for(int i = 0; i < music_hex.size(); i++){
-//       qInfo("HEXELEMENT :  %d ", (uint8_t)music_hex[i]);
-//    }
-//}
+       if (four_way->direct) {
+           sendDirect(eeprom_music_out, totalbuffersize, four_way->eeprom_address);
+       } else {
+           writeData(four_way->makeFourWayWriteCommand(eeprom_music_out, totalbuffersize,
+                                                       four_way->eeprom_address));
+           m_serial->waitForBytesWritten(1500);
+           while (m_serial->waitForReadyRead(1500)) {
+           }
 
-// void Widget::on_uploadMusic_clicked()
-//{
-//    enum notes{ C, CS, D, DS, E, F, FS, G , GS, A, AS, B, P  }note;
-//    QByteArray music_hex;
+           readData();
+       }
+       if (four_way->ack_required == false) { // good ack received from esc
+           ui->escStatusLabel->setText("WRITE DEFAULT SUCCESS");
+       }
+       ui->eepromFrame->setHidden(true);
+       ui->inputservoFrame->setHidden(true);
 
-//   uint8_t octave =0;
-//   uint8_t duration = 0;
-//   uint8_t pause;
-//   uint8_t newnote;
-
-//   uint8_t element;
-
-//   //  const QByteArray data = ui->MusicTextEdit->toPlainText().toLocal8Bit();
-//    QString music = ui->MusicTextEdit->toPlainText();
-//  QStringList nok_arrary = music.split(",");
-//  //  qInfo("SHARP :  %d ", nok_arrary[1].toLatin1()));
-//  QString st = nok_arrary[0];
-//  qInfo(st.toLatin1());
-//  QStringList interv = st.split("=");
-// qInfo("d= :  %d ",interv[1].toInt());
-
-// for( int i = 0; i < music.length(); i ++){
-//         if(music[i].isLetter()){
-//            if(music[i] == "P"){     //  80
-//             newnote = P;
-//             octave =0;
-//             if(music[i+2].isLetter()){
-//             duration = getshift(music[i+1].digitValue())-1;
-//             }
-//             if(music[i+2].isDigit()){
-//                 if(music[i+3].isLetter()){
-//                   QString s;
-//                   s.append(music[i+1]);
-//                   s.append(music[i+2]);
-//                 duration = getshift(s.toInt())-1;
-//                 }
-
-//                if(music[i+3].isDigit()){
-//                    if(music[i+4].isLetter()){
-//                     QString s;
-//                     s.append(music[i+1]);
-//                     s.append(music[i+2]);
-//                     s.append(music[i+3]);
-//                    duration = getshift(s.toInt())-1;
-//                    }
-//                }
-
-//            }
-
-//           }else{
-//        //       QString test =QChar(music[i]);
-//         //      qInfo(test);
-
-//               switch (music[i].unicode())
-//              {
-//                   case 65:
-//                     newnote = A;
-//                     break;
-//                   case 66:
-//                    newnote = B;
-//                     break;
-//                case 67:       // C
-//                 newnote = C;
-//                 break;
-//               case 68:
-//                 newnote = D;
-//                 break;
-//               case 69:
-//                 newnote = E;
-//                 break;
-//               case 70:
-//                 newnote = F;
-//                 break;
-//               case 71:
-//                 newnote = G;
-//                 break;
-//               }
-
-//               if(music[i+1] == "#"){
-//                 newnote++;
-//   //              qInfo("SHARP :  %d ", newnote);
-//                 octave = music[i+2].digitValue()-4;
-//   //              qInfo("octave :  %d ", music[i+2].digitValue()-4);
-//                 if(music[i+3].isDigit()){
-//                 duration = getshift(music[i+3].digitValue())-1; // need
-//                 square root of this!!!
-//    //             qInfo("Duration :  %d ",
-//    getshift(music[i+3].digitValue()));
-//                   }
-//               }else{
-//               octave = music[i+1].digitValue()-4;
-//   //             qInfo("octave :  %d ", music[i+1].digitValue());
-//               if(music[i+2].isDigit()){
-//                duration = getshift(music[i+2].digitValue())-1;
-//    //            qInfo("Duration :  %d ", getshift(music[i+2].digitValue()));
-//               }
-//               }
-//           }
-// //         qInfo("Music Note 1 :  %d ", newnote);
-//          element = newnote << 4 | octave << 2 | duration;
-
-//   //       qInfo("ELEMENT :  %d ", element);
-//          music_hex.append(element);
-//        }
-//    }
-//    for(int i = 0; i < music_hex.size(); i++){
-//       qInfo("HEXELEMENT :  %d ", (uint8_t)music_hex[i]);
-//    }
-//}
+}
 
 void Widget::on_crawler_default_button_clicked() {
   sendFirstEeprom(1);
@@ -2165,7 +2010,7 @@ void Widget::on_saveConfigButton_clicked()
 
 
 
-  QFileDialog::saveFileContent(eeprom_out, "am32_config.ecf");
+  QFileDialog::saveFileContent(eeprom_out, "am32_v3_config.bin");
   qInfo("file written");
    ui->configFileInfo->setText("Config File Saved");
 }
@@ -2185,7 +2030,7 @@ void Widget::on_loadConfigButton_clicked()
 
 
   filename = QFileDialog::getOpenFileName(this, tr("Open File"),
-                                          "c:", tr("All Files (*.ecf)"));
+                                          "c:", tr("All Files (*.bin)"));
   QFile inputFile(filename);
   inputFile.open(QIODevice::ReadOnly);
   if(inputFile.isOpen()){
@@ -2574,4 +2419,78 @@ void Widget::on_currentLimitIedit_editingFinished()
   ui->currentLimitIedit->setText("0");
   }
 }
+
+
+// void Widget::on_uploadMusic_clicked()
+// {
+
+
+//   //  QString data = ui->musicLineEdit->text();
+
+
+//     QString str = ui->MusicTextEdit->toPlainText();
+//     QStringList parts = str.split(",", Qt::SkipEmptyParts);
+//     uint8_t buffersize = parts.size();
+//     uint nHex;
+// bool Status2 = false;
+//     QByteArray eeprom_music_out;
+//         for (int i = 0; i < 48; i++) {
+//             eeprom_music_out.append((char)eeprom_buffer->at(i));
+//         }
+//          for (int i = 0; i < buffersize; i++) {
+//              qInfo(parts[i].toLatin1());
+//              Status2 = false;
+//              nHex = parts[i].toInt();
+//     //         nHex = parts[i].toUInt(&Status2,16);
+//              eeprom_music_out.append(nHex);
+//             // qInfo(" output integer %i", nHex);
+//          }
+// qInfo(" buffersize: %i", buffersize);
+
+// //qInfo(" eepromout: %i", eeprom_music_out[48]);
+// //qInfo(" eepromout: %i", eeprom_music_out[49]);
+// //qInfo(" eepromout: %i", eeprom_music_out[50]);
+//     //    uint nHex = parts[1].toUInt(&Status2,16);
+
+// //        qInfo(parts[0].toLatin1());
+//   //      qInfo(parts[1].toLatin1());
+//   //      qInfo(parts[2].toLatin1());
+//   //      qInfo(parts[3].toLatin1());
+//  //       qInfo(" output integer %i", nHex);
+//   //      qInfo(" output integer %i", parts[2].toInt());
+//   //      qInfo(" output integer %i", parts[3].toInt());
+//  //       qInfo(" output integer %i", parts[4].toInt());
+//   //      qInfo(" output integer %i", parts[5].toInt());
+
+//     four_way->ack_required = true;
+
+//     if (four_way->direct) {
+//         sendDirect(eeprom_music_out, 48+buffersize, four_way->eeprom_address);
+//     } else {
+//         writeData(four_way->makeFourWayWriteCommand(eeprom_music_out, 48+buffersize,
+//                                                     four_way->eeprom_address));
+//         m_serial->waitForBytesWritten(1000);
+//         while (m_serial->waitForReadyRead(1000)) {
+//         }
+
+//         readData();
+//     }
+//     if (four_way->ack_required == false) { // good ack received from esc
+//         ui->escStatusLabel->setText("WRITE DEFAULT SUCCESS");
+//     }
+//     ui->eepromFrame->setHidden(true);
+//     ui->inputservoFrame->setHidden(true);
+// }
+
+
+void Widget::on_initMotor1_4_clicked(){ on_initMotor1_clicked(); }
+
+
+void Widget::on_initMotor2_4_clicked(){ on_initMotor2_clicked(); }
+
+
+void Widget::on_initMotor3_4_clicked(){ on_initMotor3_clicked(); }
+
+
+void Widget::on_initMotor4_4_clicked(){ on_initMotor4_clicked(); }
 

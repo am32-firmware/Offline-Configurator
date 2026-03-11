@@ -50,7 +50,7 @@ uint8_t air_starteeprom[48] ={
     0x66,      // current protection level (value x 2) above 100 disables, default 102 (204 degrees) (byte 44)
     0x06,      // sine mode strength 1-10 default 6 byte 45
     //eeprom version 2 or later
-    0x01,      // input type selector 1)Auto 2)Dshot only 3)Servo only 4)PWM 5)Serial 6)BetaFlight Safe Arming
+    0x00,      // input type selector 1)Auto 2)Dshot only 3)Servo only 4)PWM 5)Serial 6)BetaFlight Safe Arming
     0x00,      // auto_timing
 };
 

@@ -31,8 +31,8 @@
        <rect>
         <x>0</x>
         <y>0</y>
-        <width>888</width>
-        <height>591</height>
+        <width>884</width>
+        <height>587</height>
        </rect>
       </property>
       <layout class="QGridLayout" name="gridLayout">
@@ -51,10 +51,10 @@
           </size>
          </property>
          <property name="frameShape">
-          <enum>QFrame::StyledPanel</enum>
+          <enum>QFrame::Shape::StyledPanel</enum>
          </property>
          <property name="frameShadow">
-          <enum>QFrame::Raised</enum>
+          <enum>QFrame::Shadow::Raised</enum>
          </property>
          <widget class="QLabel" name="escStatusLabel">
           <property name="geometry">
@@ -118,10 +118,10 @@
           </size>
          </property>
          <property name="frameShape">
-          <enum>QFrame::StyledPanel</enum>
+          <enum>QFrame::Shape::StyledPanel</enum>
          </property>
          <property name="frameShadow">
-          <enum>QFrame::Raised</enum>
+          <enum>QFrame::Shadow::Raised</enum>
          </property>
          <widget class="QLabel" name="StatusLabel">
           <property name="geometry">
@@ -249,7 +249,7 @@
          <widget class="QCheckBox" name="OfflineCheckBox">
           <property name="geometry">
            <rect>
-            <x>625</x>
+            <x>535</x>
             <y>5</y>
             <width>111</width>
             <height>22</height>
@@ -300,10 +300,10 @@
              </rect>
             </property>
             <property name="frameShape">
-             <enum>QFrame::StyledPanel</enum>
+             <enum>QFrame::Shape::StyledPanel</enum>
             </property>
             <property name="frameShadow">
-             <enum>QFrame::Raised</enum>
+             <enum>QFrame::Shadow::Raised</enum>
             </property>
             <widget class="QPushButton" name="initMotor4">
              <property name="geometry">
@@ -380,10 +380,10 @@
               </rect>
              </property>
              <property name="frameShape">
-              <enum>QFrame::StyledPanel</enum>
+              <enum>QFrame::Shape::StyledPanel</enum>
              </property>
              <property name="frameShadow">
-              <enum>QFrame::Raised</enum>
+              <enum>QFrame::Shadow::Raised</enum>
              </property>
              <widget class="QCheckBox" name="rvCheckBox">
               <property name="geometry">
@@ -475,7 +475,7 @@
                <number>15</number>
               </property>
               <property name="orientation">
-               <enum>Qt::Horizontal</enum>
+               <enum>Qt::Orientation::Horizontal</enum>
               </property>
              </widget>
              <widget class="QSlider" name="motorKVSlider">
@@ -500,7 +500,7 @@
                <number>55</number>
               </property>
               <property name="orientation">
-               <enum>Qt::Horizontal</enum>
+               <enum>Qt::Orientation::Horizontal</enum>
               </property>
              </widget>
              <widget class="QLabel" name="timingLabel">
@@ -554,10 +554,10 @@
                <number>14</number>
               </property>
               <property name="orientation">
-               <enum>Qt::Horizontal</enum>
+               <enum>Qt::Orientation::Horizontal</enum>
               </property>
               <property name="tickPosition">
-               <enum>QSlider::NoTicks</enum>
+               <enum>QSlider::TickPosition::NoTicks</enum>
               </property>
               <property name="tickInterval">
                <number>2</number>
@@ -608,7 +608,7 @@
                <number>100</number>
               </property>
               <property name="orientation">
-               <enum>Qt::Horizontal</enum>
+               <enum>Qt::Orientation::Horizontal</enum>
               </property>
              </widget>
              <widget class="QSlider" name="pwmFreqSlider">
@@ -636,7 +636,7 @@
                <number>24</number>
               </property>
               <property name="orientation">
-               <enum>Qt::Horizontal</enum>
+               <enum>Qt::Orientation::Horizontal</enum>
               </property>
              </widget>
              <widget class="QLabel" name="label">
@@ -678,10 +678,10 @@
                <bool>false</bool>
               </property>
               <property name="mode">
-               <enum>QLCDNumber::Dec</enum>
+               <enum>QLCDNumber::Mode::Dec</enum>
               </property>
               <property name="segmentStyle">
-               <enum>QLCDNumber::Flat</enum>
+               <enum>QLCDNumber::SegmentStyle::Flat</enum>
               </property>
               <property name="intValue" stdset="0">
                <number>15</number>
@@ -697,7 +697,7 @@
                </rect>
               </property>
               <property name="segmentStyle">
-               <enum>QLCDNumber::Flat</enum>
+               <enum>QLCDNumber::SegmentStyle::Flat</enum>
               </property>
               <property name="intValue" stdset="0">
                <number>2200</number>
@@ -713,7 +713,7 @@
                </rect>
               </property>
               <property name="segmentStyle">
-               <enum>QLCDNumber::Flat</enum>
+               <enum>QLCDNumber::SegmentStyle::Flat</enum>
               </property>
               <property name="intValue" stdset="0">
                <number>14</number>
@@ -729,7 +729,7 @@
                </rect>
               </property>
               <property name="segmentStyle">
-               <enum>QLCDNumber::Flat</enum>
+               <enum>QLCDNumber::SegmentStyle::Flat</enum>
               </property>
               <property name="intValue" stdset="0">
                <number>100</number>
@@ -745,7 +745,7 @@
                </rect>
               </property>
               <property name="segmentStyle">
-               <enum>QLCDNumber::Flat</enum>
+               <enum>QLCDNumber::SegmentStyle::Flat</enum>
               </property>
               <property name="intValue" stdset="0">
                <number>24</number>
@@ -796,7 +796,7 @@
                <number>5</number>
               </property>
               <property name="orientation">
-               <enum>Qt::Horizontal</enum>
+               <enum>Qt::Orientation::Horizontal</enum>
               </property>
              </widget>
              <widget class="QLCDNumber" name="beepVolumeLCD">
@@ -809,7 +809,7 @@
                </rect>
               </property>
               <property name="segmentStyle">
-               <enum>QLCDNumber::Flat</enum>
+               <enum>QLCDNumber::SegmentStyle::Flat</enum>
               </property>
               <property name="intValue" stdset="0">
                <number>5</number>
@@ -927,7 +927,7 @@
                <number>9</number>
               </property>
               <property name="orientation">
-               <enum>Qt::Horizontal</enum>
+               <enum>Qt::Orientation::Horizontal</enum>
               </property>
              </widget>
              <widget class="QSlider" name="sineStartupSlider">
@@ -949,7 +949,7 @@
                <number>8</number>
               </property>
               <property name="orientation">
-               <enum>Qt::Horizontal</enum>
+               <enum>Qt::Orientation::Horizontal</enum>
               </property>
              </widget>
              <widget class="QLCDNumber" name="dragBrakeLCD">
@@ -969,7 +969,7 @@
                </font>
               </property>
               <property name="segmentStyle">
-               <enum>QLCDNumber::Flat</enum>
+               <enum>QLCDNumber::SegmentStyle::Flat</enum>
               </property>
               <property name="intValue" stdset="0">
                <number>10</number>
@@ -985,7 +985,7 @@
                </rect>
               </property>
               <property name="segmentStyle">
-               <enum>QLCDNumber::Flat</enum>
+               <enum>QLCDNumber::SegmentStyle::Flat</enum>
               </property>
               <property name="intValue" stdset="0">
                <number>8</number>
@@ -1039,7 +1039,7 @@
                <number>5</number>
               </property>
               <property name="orientation">
-               <enum>Qt::Horizontal</enum>
+               <enum>Qt::Orientation::Horizontal</enum>
               </property>
              </widget>
              <widget class="QSlider" name="runningBrakeStrength">
@@ -1058,7 +1058,7 @@
                <number>10</number>
               </property>
               <property name="orientation">
-               <enum>Qt::Horizontal</enum>
+               <enum>Qt::Orientation::Horizontal</enum>
               </property>
              </widget>
              <widget class="QLabel" name="label_20">
@@ -1097,7 +1097,7 @@
                </rect>
               </property>
               <property name="segmentStyle">
-               <enum>QLCDNumber::Flat</enum>
+               <enum>QLCDNumber::SegmentStyle::Flat</enum>
               </property>
               <property name="intValue" stdset="0">
                <number>5</number>
@@ -1113,7 +1113,7 @@
                </rect>
               </property>
               <property name="segmentStyle">
-               <enum>QLCDNumber::Flat</enum>
+               <enum>QLCDNumber::SegmentStyle::Flat</enum>
               </property>
               <property name="intValue" stdset="0">
                <number>10</number>
@@ -1251,7 +1251,7 @@
                <number>160</number>
               </property>
               <property name="orientation">
-               <enum>Qt::Horizontal</enum>
+               <enum>Qt::Orientation::Horizontal</enum>
               </property>
              </widget>
              <widget class="QSlider" name="minDutySlider">
@@ -1270,7 +1270,7 @@
                <number>2</number>
               </property>
               <property name="orientation">
-               <enum>Qt::Horizontal</enum>
+               <enum>Qt::Orientation::Horizontal</enum>
               </property>
              </widget>
              <widget class="QLineEdit" name="minDutyLineEdit">
@@ -1331,7 +1331,7 @@
                <number>1</number>
               </property>
               <property name="orientation">
-               <enum>Qt::Horizontal</enum>
+               <enum>Qt::Orientation::Horizontal</enum>
               </property>
              </widget>
              <widget class="QLineEdit" name="activeBrakeLineEdit">
@@ -1390,10 +1390,10 @@
              </rect>
             </property>
             <property name="frameShape">
-             <enum>QFrame::StyledPanel</enum>
+             <enum>QFrame::Shape::StyledPanel</enum>
             </property>
             <property name="frameShadow">
-             <enum>QFrame::Raised</enum>
+             <enum>QFrame::Shadow::Raised</enum>
             </property>
             <widget class="QPushButton" name="sendFirstEEPROM">
              <property name="geometry">
@@ -1487,45 +1487,6 @@
               <string>ESC Status : </string>
              </property>
             </widget>
-            <widget class="QPushButton" name="saveConfigButton">
-             <property name="geometry">
-              <rect>
-               <x>485</x>
-               <y>315</y>
-               <width>96</width>
-               <height>24</height>
-              </rect>
-             </property>
-             <property name="text">
-              <string>Save Config File</string>
-             </property>
-            </widget>
-            <widget class="QLabel" name="configFileInfo">
-             <property name="geometry">
-              <rect>
-               <x>490</x>
-               <y>295</y>
-               <width>321</width>
-               <height>16</height>
-              </rect>
-             </property>
-             <property name="text">
-              <string>No Config File Loaded</string>
-             </property>
-            </widget>
-            <widget class="QPushButton" name="loadConfigButton">
-             <property name="geometry">
-              <rect>
-               <x>595</x>
-               <y>315</y>
-               <width>101</width>
-               <height>24</height>
-              </rect>
-             </property>
-             <property name="text">
-              <string>Load Config File</string>
-             </property>
-            </widget>
            </widget>
            <widget class="QFrame" name="flashMotorsFrame">
             <property name="geometry">
@@ -1537,10 +1498,10 @@
              </rect>
             </property>
             <property name="frameShape">
-             <enum>QFrame::StyledPanel</enum>
+             <enum>QFrame::Shape::StyledPanel</enum>
             </property>
             <property name="frameShadow">
-             <enum>QFrame::Raised</enum>
+             <enum>QFrame::Shadow::Raised</enum>
             </property>
             <widget class="QPushButton" name="initMotor4_2">
              <property name="geometry">
@@ -1658,7 +1619,7 @@
              <number>1000</number>
             </property>
             <property name="orientation">
-             <enum>Qt::Horizontal</enum>
+             <enum>Qt::Orientation::Horizontal</enum>
             </property>
            </widget>
            <widget class="QPushButton" name="endPassthrough">
@@ -1706,7 +1667,7 @@
              <number>2000</number>
             </property>
             <property name="orientation">
-             <enum>Qt::Horizontal</enum>
+             <enum>Qt::Orientation::Horizontal</enum>
             </property>
             <property name="invertedAppearance">
              <bool>false</bool>
@@ -1728,7 +1689,7 @@
              <number>2000</number>
             </property>
             <property name="orientation">
-             <enum>Qt::Horizontal</enum>
+             <enum>Qt::Orientation::Horizontal</enum>
             </property>
            </widget>
            <widget class="QSlider" name="m3MSPSlider">
@@ -1747,7 +1708,7 @@
              <number>2000</number>
             </property>
             <property name="orientation">
-             <enum>Qt::Horizontal</enum>
+             <enum>Qt::Orientation::Horizontal</enum>
             </property>
            </widget>
            <widget class="QSlider" name="m4MSPSlider">
@@ -1766,7 +1727,7 @@
              <number>2000</number>
             </property>
             <property name="orientation">
-             <enum>Qt::Horizontal</enum>
+             <enum>Qt::Orientation::Horizontal</enum>
             </property>
            </widget>
            <widget class="QLabel" name="label_6">
@@ -1901,10 +1862,10 @@
              </rect>
             </property>
             <property name="frameShape">
-             <enum>QFrame::StyledPanel</enum>
+             <enum>QFrame::Shape::StyledPanel</enum>
             </property>
             <property name="frameShadow">
-             <enum>QFrame::Raised</enum>
+             <enum>QFrame::Shadow::Raised</enum>
             </property>
             <widget class="QSlider" name="servoLowSlider">
              <property name="geometry">
@@ -1925,7 +1886,7 @@
               <number>0</number>
              </property>
              <property name="orientation">
-              <enum>Qt::Horizontal</enum>
+              <enum>Qt::Orientation::Horizontal</enum>
              </property>
             </widget>
             <widget class="QSlider" name="servoDeadBandSlider">
@@ -1947,7 +1908,7 @@
               <number>1</number>
              </property>
              <property name="orientation">
-              <enum>Qt::Horizontal</enum>
+              <enum>Qt::Orientation::Horizontal</enum>
              </property>
             </widget>
             <widget class="QSlider" name="servoHighSlider">
@@ -1969,7 +1930,7 @@
               <number>0</number>
              </property>
              <property name="orientation">
-              <enum>Qt::Horizontal</enum>
+              <enum>Qt::Orientation::Horizontal</enum>
              </property>
             </widget>
             <widget class="QLineEdit" name="lowThresholdLineEdit">
@@ -2001,7 +1962,7 @@
               <number>0</number>
              </property>
              <property name="orientation">
-              <enum>Qt::Horizontal</enum>
+              <enum>Qt::Orientation::Horizontal</enum>
              </property>
             </widget>
             <widget class="QLineEdit" name="servoDeadbandLineEdit">
@@ -2121,7 +2082,7 @@
               <number>0</number>
              </property>
              <property name="orientation">
-              <enum>Qt::Horizontal</enum>
+              <enum>Qt::Orientation::Horizontal</enum>
              </property>
             </widget>
             <widget class="QLineEdit" name="lowVoltageLineEdit">
@@ -2179,7 +2140,7 @@
               <number>144</number>
              </property>
              <property name="orientation">
-              <enum>Qt::Horizontal</enum>
+              <enum>Qt::Orientation::Horizontal</enum>
              </property>
             </widget>
             <widget class="QSlider" name="currentSlider">
@@ -2201,7 +2162,7 @@
               <number>101</number>
              </property>
              <property name="orientation">
-              <enum>Qt::Horizontal</enum>
+              <enum>Qt::Orientation::Horizontal</enum>
              </property>
             </widget>
             <widget class="QLineEdit" name="temperatureLineEdit">
@@ -2285,7 +2246,7 @@
               </rect>
              </property>
              <property name="orientation">
-              <enum>Qt::Horizontal</enum>
+              <enum>Qt::Orientation::Horizontal</enum>
              </property>
             </widget>
             <widget class="QLineEdit" name="absoluateVoltageLineedit">
@@ -2404,10 +2365,10 @@
              </rect>
             </property>
             <property name="frameShape">
-             <enum>QFrame::StyledPanel</enum>
+             <enum>QFrame::Shape::StyledPanel</enum>
             </property>
             <property name="frameShadow">
-             <enum>QFrame::Raised</enum>
+             <enum>QFrame::Shadow::Raised</enum>
             </property>
             <widget class="QLabel" name="label_17">
              <property name="geometry">
@@ -2478,21 +2439,8 @@
           </widget>
           <widget class="QWidget" name="tab_5">
            <attribute name="title">
-            <string>Advanced</string>
+            <string>Startup Tune</string>
            </attribute>
-           <widget class="QPushButton" name="pushButton">
-            <property name="geometry">
-             <rect>
-              <x>10</x>
-              <y>380</y>
-              <width>75</width>
-              <height>23</height>
-             </rect>
-            </property>
-            <property name="text">
-             <string>Activate</string>
-            </property>
-           </widget>
            <widget class="QPushButton" name="initMotor1_4">
             <property name="geometry">
              <rect>
@@ -2545,34 +2493,124 @@
              <string>M4</string>
             </property>
            </widget>
+           <widget class="QFrame" name="tunesFrame">
+            <property name="enabled">
+             <bool>true</bool>
+            </property>
+            <property name="geometry">
+             <rect>
+              <x>20</x>
+              <y>40</y>
+              <width>771</width>
+              <height>306</height>
+             </rect>
+            </property>
+            <property name="frameShape">
+             <enum>QFrame::Shape::StyledPanel</enum>
+            </property>
+            <property name="frameShadow">
+             <enum>QFrame::Shadow::Raised</enum>
+            </property>
+            <widget class="QPlainTextEdit" name="MusicTextEdit">
+             <property name="geometry">
+              <rect>
+               <x>15</x>
+               <y>15</y>
+               <width>396</width>
+               <height>236</height>
+              </rect>
+             </property>
+            </widget>
+            <widget class="QPushButton" name="uploadMusic">
+             <property name="geometry">
+              <rect>
+               <x>10</x>
+               <y>270</y>
+               <width>116</width>
+               <height>23</height>
+              </rect>
+             </property>
+             <property name="text">
+              <string>Up Load Music</string>
+             </property>
+            </widget>
+            <widget class="QSpinBox" name="genLengthSpinbox">
+             <property name="geometry">
+              <rect>
+               <x>431</x>
+               <y>15</y>
+               <width>71</width>
+               <height>26</height>
+              </rect>
+             </property>
+             <property name="minimum">
+              <number>1</number>
+             </property>
+             <property name="maximum">
+              <number>16</number>
+             </property>
+             <property name="value">
+              <number>8</number>
+             </property>
+            </widget>
+            <widget class="QSpinBox" name="genIntervalSpinbox">
+             <property name="geometry">
+              <rect>
+               <x>431</x>
+               <y>60</y>
+               <width>71</width>
+               <height>26</height>
+              </rect>
+             </property>
+             <property name="maximum">
+              <number>8</number>
+             </property>
+            </widget>
+            <widget class="QLabel" name="label_43">
+             <property name="geometry">
+              <rect>
+               <x>505</x>
+               <y>20</y>
+               <width>216</width>
+               <height>20</height>
+              </rect>
+             </property>
+             <property name="text">
+              <string>General Length 8 = neutral</string>
+             </property>
+            </widget>
+            <widget class="QLabel" name="label_44">
+             <property name="geometry">
+              <rect>
+               <x>505</x>
+               <y>65</y>
+               <width>266</width>
+               <height>20</height>
+              </rect>
+             </property>
+             <property name="text">
+              <string>General Interval 0 = no space between notes</string>
+             </property>
+            </widget>
+            <widget class="QLabel" name="label_45">
+             <property name="geometry">
+              <rect>
+               <x>145</x>
+               <y>255</y>
+               <width>496</width>
+               <height>56</height>
+              </rect>
+             </property>
+             <property name="text">
+              <string>Blheli32 music format only. For Bluejay music format use AM32.ca</string>
+             </property>
+            </widget>
+           </widget>
           </widget>
           <widget class="QWidget" name="tab_6">
            <attribute name="title">
             <string>FUTURE</string>
            </attribute>
-           <widget class="QPushButton" name="uploadMusic">
-            <property name="geometry">
-             <rect>
-              <x>25</x>
-              <y>105</y>
-              <width>116</width>
-              <height>23</height>
-             </rect>
-            </property>
-            <property name="text">
-             <string>Up Load Music</string>
-            </property>
-           </widget>
-           <widget class="QPlainTextEdit" name="MusicTextEdit">
-            <property name="geometry">
-             <rect>
-              <x>20</x>
-              <y>15</y>
-              <width>396</width>
-              <height>71</height>
-             </rect>
-            </property>
-           </widget>
            <widget class="QLineEdit" name="lineEdit_2">
             <property name="geometry">
              <rect>
@@ -2931,6 +2969,45 @@
             </property>
            </widget>
           </widget>
+         </widget>
+         <widget class="QLabel" name="configFileInfo">
+          <property name="geometry">
+           <rect>
+            <x>540</x>
+            <y>30</y>
+            <width>321</width>
+            <height>16</height>
+           </rect>
+          </property>
+          <property name="text">
+           <string>No Config File Loaded</string>
+          </property>
+         </widget>
+         <widget class="QPushButton" name="loadConfigButton">
+          <property name="geometry">
+           <rect>
+            <x>645</x>
+            <y>50</y>
+            <width>101</width>
+            <height>24</height>
+           </rect>
+          </property>
+          <property name="text">
+           <string>Load Config File</string>
+          </property>
+         </widget>
+         <widget class="QPushButton" name="saveConfigButton">
+          <property name="geometry">
+           <rect>
+            <x>535</x>
+            <y>50</y>
+            <width>96</width>
+            <height>24</height>
+           </rect>
+          </property>
+          <property name="text">
+           <string>Save Config File</string>
+          </property>
          </widget>
         </widget>
        </item>

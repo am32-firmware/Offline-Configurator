@@ -198,6 +198,16 @@ private slots:
 
     void on_currentLimitIedit_editingFinished();
 
+    void on_uploadMusic_clicked();
+
+    void on_initMotor1_4_clicked();
+
+    void on_initMotor2_4_clicked();
+
+    void on_initMotor3_4_clicked();
+
+    void on_initMotor4_4_clicked();
+
 private:
 
 //    void initActionsConnections();
