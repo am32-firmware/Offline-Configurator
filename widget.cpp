@@ -29,7 +29,7 @@ Widget::Widget(QWidget *parent)
   ui->setupUi(this);
   //ui->tabWidget->removeTab(4); // todo make these visible
   ui->tabWidget->removeTab(5);   // remove led tab for now
-  this->setWindowTitle("ESC Config Tool 1.94 - for firmware version 2.19 and higher");
+  this->setWindowTitle("ESC Config Tool 1.95 - for firmware version 2.19 and higher");
 
   serialInfoStuff();
 
@@ -2025,247 +2025,252 @@ void Widget::on_saveConfigButton_clicked()
    ui->configFileInfo->setText("Config File Saved");
 }
 
+
+void Widget::loadConfig(){
+    QByteArray fileBuffer;
+    uint16_t buffer_length = 48;
+    if(firstOffline == true){
+        for (int i = 0; i < 48; i++) {
+            fileBuffer.append(air_starteeprom[i]);
+
+        }
+        firstOffline = false;
+        //   override = 0;
+    }else{
+
+
+        filename = QFileDialog::getOpenFileName(this, tr("Open File"),
+                                                "c:", tr("All Files (*.bin)"));
+        QFile inputFile(filename);
+        inputFile.open(QIODevice::ReadOnly);
+        if(inputFile.isOpen()){
+
+            fileBuffer = inputFile.readAll();
+        }
+    }
+    if ((fileBuffer.at(0) == (char)0x01)) {
+        if ((fileBuffer.at(1) == (char)0xFF) ||
+            (fileBuffer.at(2) ==
+             (char)0x00)) { // if eeprom version is 0xff it means boot bit is set
+            // but no defaults have been sent
+            QMessageBox::warning( // also if bootloader version is 00 it means it has
+                // been written
+                this, tr("Application Name"),
+                tr("No settings found use 'Send default EEPROM' under FLASH tab"));
+            ui->eepromFrame->setHidden(true);
+            ui->inputservoFrame->setHidden(true);
+            ui->flashFourwayFrame->setHidden(false);
+            ui->escStatusLabel_2->setText("Connected - No EEprom");
+            ui->escStatusLabel->setText("Connected - No EEprom");
+            //    return false;
+        }
+        if ((fileBuffer.at(1) <
+             (char)0x01)) { // if eeprom version is 0xff it means boot bit is set
+            // but no defaults have been sent
+            QMessageBox::warning( // also if bootloader version is 00 it means it has
+                // been written
+                this, tr("Application Name"),
+                tr("Outdated firmware detected 'Please update to lastest AM32 "
+                   "release"));
+            //   ui->sendFirstEEPROM->setHidden(true);
+            ui->crawler_default_button->setHidden(true);
+            ui->eepromFrame->setHidden(true);
+            ui->inputservoFrame->setHidden(true);
+            ui->flashFourwayFrame->setHidden(false);
+            ui->escStatusLabel_2->setText("Connected - Firmware Update Required");
+            ui->escStatusLabel->setText("Connected - Firmware Update Required");
+            //    return false;
+        }
+
+
+        ui->maxRocSlider->setValue((uint8_t)(fileBuffer.at(5)));
+        ui->minDutySlider->setValue((uint8_t)(fileBuffer.at(6)));
+        if(fileBuffer.at(7) == 0x01){
+            ui->disableStickCalibCheckbox->setChecked(true);
+        }else{
+            ui->disableStickCalibCheckbox->setChecked(false);
+        }
+        ui->absoluteVoltageSlider->setValue((uint8_t)(fileBuffer.at(8)));
+        ui->currentLimitPedit->setText(QString::number((uint8_t)(fileBuffer.at(9))*2));
+        ui->currentLimitIedit->setText(QString::number((uint8_t)(fileBuffer.at(10))));
+        ui->currentLimitDedit->setText(QString::number((uint8_t)(fileBuffer.at(11))*2));
+        ui->activeBrakeSlider->setValue((uint8_t)(fileBuffer.at(12)));
+
+        if(fileBuffer.at(17) == 0x01){
+            ui->rvCheckBox->setChecked(true);
+        }else{
+            ui->rvCheckBox->setChecked(false);
+        }
+        if (fileBuffer.at(18) == 0x01) {
+            ui->biDirectionCheckbox->setChecked(true);
+        } else {
+            ui->biDirectionCheckbox->setChecked(false);
+        }
+        if (fileBuffer.at(19) == 0x01) {
+            ui->sinCheckBox->setChecked(true);
+        } else {
+            ui->sinCheckBox->setChecked(false);
+        }
+        if (fileBuffer.at(20) == 0x01) {
+            ui->comp_pwmCheckbox->setChecked(true);
+        } else {
+            ui->comp_pwmCheckbox->setChecked(false);
+        }
+        if (fileBuffer.at(21) == 0x01) {
+            ui->varPWMCheckBox->setChecked(true);
+        } else {
+            ui->varPWMCheckBox->setChecked(false);
+        }
+        if (fileBuffer.at(21) == 0x02) {
+            ui->autoPWM->setChecked(true);
+        } else {
+            ui->autoPWM->setChecked(false);
+        }
+
+        if (fileBuffer.at(22) == 0x01) {
+            ui->stuckProtectionBox->setChecked(true);
+        } else {
+            ui->stuckProtectionBox->setChecked(false);
+        }
+        ui->timingAdvanceLCD->display(((fileBuffer.at(23))-10)*0.9375);
+        ui->timingAdvanceSlider->setValue(fileBuffer.at(23));
+        ui->pwmFreqSlider->setValue(fileBuffer.at(24));
+        ui->startupPowerSlider->setValue((uint8_t)fileBuffer.at(25));
+        ui->motorKVSlider->setValue((uint8_t)fileBuffer.at(26));
+        ui->motorPolesSlider->setValue(fileBuffer.at(27));
+        if (fileBuffer.at(28) == 0x01) {
+            ui->brakecheckbox->setChecked(true);
+        } else {
+            ui->brakecheckbox->setChecked(false);
+        }
+
+        if (fileBuffer.at(28) == 0x02) {
+            ui->activeBrakeCheckbox->setChecked(true);
+        } else {
+            ui->activeBrakeCheckbox->setChecked(false);
+        }
+
+        if (fileBuffer.at(29) == 0x01) {
+            ui->antiStallBox->setChecked(true);
+        } else {
+            ui->antiStallBox->setChecked(false);
+        }
+        if (fileBuffer.at(1) == 0) { // if ESC is curently on eeprom version 0
+            ui->beepVolumeSlider->setValue(5);
+            ui->servoLowSlider->setValue(128);
+            ui->servoHighSlider->setValue(128);
+            ui->servoNeutralSlider->setValue(128);
+            ui->servoDeadBandSlider->setValue(50);
+            ui->thirtymsTelemBox->setChecked(false);
+        } else {
+
+            ui->beepVolumeSlider->setValue(fileBuffer.at(30));
+            if (fileBuffer.at(31) == 0x01) {
+                ui->thirtymsTelemBox->setChecked(true);
+            } else {
+                ui->thirtymsTelemBox->setChecked(false);
+            }
+            ui->servoLowSlider->setValue((uint8_t)(fileBuffer.at(32)));
+            ui->servoHighSlider->setValue((uint8_t)(fileBuffer.at(33)));
+            ui->servoNeutralSlider->setValue((uint8_t)(fileBuffer.at(34)));
+            ui->servoDeadBandSlider->setValue((uint8_t)(fileBuffer.at(35)));
+
+            if (fileBuffer.at(36) == 0x01) {
+                ui->lowVoltageCuttoffBox->setChecked(true);
+            } else {
+                ui->lowVoltageCuttoffBox->setChecked(false);
+            }
+            ui->lowVoltageThresholdSlider->setValue((uint8_t)(fileBuffer.at(37)));
+            if (fileBuffer.at(38) == 0x01) {
+                ui->rcCarReverse->setChecked(true);
+            } else {
+                ui->rcCarReverse->setChecked(false);
+            }
+            if (fileBuffer.at(39) == 0x01) {
+                ui->hallSensorCheckbox->setChecked(true);
+            } else {
+                ui->hallSensorCheckbox->setChecked(false);
+            }
+            ui->sineStartupSlider->setValue((uint8_t)(fileBuffer.at(40)));
+            ui->dragBrakeSlider->setValue((uint8_t)(fileBuffer.at(41)));
+
+            ui->runningBrakeStrength->setValue((uint8_t)(fileBuffer.at(42)));
+            if ((uint8_t)(fileBuffer.at(45)) > 10) {
+                ui->sineModePowerSlider->setValue(5);
+            } else {
+                ui->sineModePowerSlider->setValue((uint8_t)(fileBuffer.at(45)));
+            }
+
+            if ((uint8_t)(fileBuffer.at(43)) < 70) {
+                ui->temperatureSlider->setValue(142);
+            } else {
+                ui->temperatureSlider->setValue((uint8_t)(fileBuffer.at(43)));
+            }
+            ui->currentSlider->setValue((uint8_t)(fileBuffer.at(44)));
+            ui->signalComboBox->setCurrentIndex((uint8_t)(fileBuffer.at(46)));
+        }
+
+        QString name; // 2 bytes
+        //    name.append(QChar(fileBuffer.at(5)));
+        //    name.append(QChar(fileBuffer.at(6)));
+        //    name.append(QChar(fileBuffer.at(7)));
+        //    name.append(QChar(fileBuffer.at(8)));
+        //    name.append(QChar(fileBuffer.at(9)));
+        //    name.append(QChar(fileBuffer.at(10)));
+        //    name.append(QChar(fileBuffer.at(11)));
+        //    name.append(QChar(fileBuffer.at(12)));
+        //    name.append(QChar(fileBuffer.at(13)));
+        //    name.append(QChar(fileBuffer.at(14)));
+        //    name.append(QChar(fileBuffer.at(15)));
+        //    name.append(QChar(fileBuffer.at(16)));
+        ui->FirmwareNameLabel->setText(name);
+
+        QString version = "FW Rev:";
+        QString major = QString::number((uint8_t)fileBuffer.at(3));
+        QString minor = QString::number((uint8_t)fileBuffer.at(4));
+        version.append(major);
+        version.append(".");
+        version.append(minor);
+        ui->FirmwareVerionsLabel->setText(version);
+
+        QChar charas = fileBuffer.at(18);
+        int output = charas.toLatin1();
+        qInfo(" output integer %i", output);
+        eeprom_buffer->clear();
+        //     eeprom_buffer = fileBuffer;
+        for (int i = 0; i < buffer_length; i++) {
+            eeprom_buffer->append(fileBuffer.at(i));
+        }
+
+        ui->configFileInfo->setText("Config File:" + filename);
+
+    }
+
+}
+
+
+
 void Widget::on_loadConfigButton_clicked()
 {
-   QByteArray fileBuffer;
-   uint16_t buffer_length = 48;
-   if(firstOffline == true){
-      for (int i = 0; i < 48; i++) {
-        fileBuffer.append(air_starteeprom[i]);
-
-      }
-      firstOffline = false;
- //   override = 0;
-   }else{
-
-
-  filename = QFileDialog::getOpenFileName(this, tr("Open File"),
-                                          "c:", tr("All Files (*.bin)"));
-  QFile inputFile(filename);
-  inputFile.open(QIODevice::ReadOnly);
-  if(inputFile.isOpen()){
-
-  fileBuffer = inputFile.readAll();
-  }
-   }
-  if ((fileBuffer.at(0) == (char)0x01)) {
-    if ((fileBuffer.at(1) == (char)0xFF) ||
-        (fileBuffer.at(2) ==
-         (char)0x00)) { // if eeprom version is 0xff it means boot bit is set
-        // but no defaults have been sent
-      QMessageBox::warning( // also if bootloader version is 00 it means it has
-          // been written
-          this, tr("Application Name"),
-          tr("No settings found use 'Send default EEPROM' under FLASH tab"));
-      ui->eepromFrame->setHidden(true);
-      ui->inputservoFrame->setHidden(true);
-      ui->flashFourwayFrame->setHidden(false);
-      ui->escStatusLabel_2->setText("Connected - No EEprom");
-      ui->escStatusLabel->setText("Connected - No EEprom");
-  //    return false;
-    }
-    if ((fileBuffer.at(1) <
-         (char)0x01)) { // if eeprom version is 0xff it means boot bit is set
-        // but no defaults have been sent
-      QMessageBox::warning( // also if bootloader version is 00 it means it has
-          // been written
-          this, tr("Application Name"),
-          tr("Outdated firmware detected 'Please update to lastest AM32 "
-             "release"));
-   //   ui->sendFirstEEPROM->setHidden(true);
-      ui->crawler_default_button->setHidden(true);
-      ui->eepromFrame->setHidden(true);
-      ui->inputservoFrame->setHidden(true);
-      ui->flashFourwayFrame->setHidden(false);
-      ui->escStatusLabel_2->setText("Connected - Firmware Update Required");
-      ui->escStatusLabel->setText("Connected - Firmware Update Required");
-  //    return false;
-    }
-
-
-    ui->maxRocSlider->setValue((uint8_t)(fileBuffer.at(5)));
-    ui->minDutySlider->setValue((uint8_t)(fileBuffer.at(6)));
-    if(fileBuffer.at(7) == 0x01){
-      ui->disableStickCalibCheckbox->setChecked(true);
-    }else{
-      ui->disableStickCalibCheckbox->setChecked(false);
-    }
-    ui->absoluteVoltageSlider->setValue((uint8_t)(fileBuffer.at(8)));
-    ui->currentLimitPedit->setText(QString::number((uint8_t)(fileBuffer.at(9))*2));
-    ui->currentLimitIedit->setText(QString::number((uint8_t)(fileBuffer.at(10))));
-    ui->currentLimitDedit->setText(QString::number((uint8_t)(fileBuffer.at(11))*2));
-    ui->activeBrakeSlider->setValue((uint8_t)(fileBuffer.at(12)));
-
-            if(fileBuffer.at(17) == 0x01){
-                ui->rvCheckBox->setChecked(true);
-            }else{
-               ui->rvCheckBox->setChecked(false);
-            }
-    if (fileBuffer.at(18) == 0x01) {
-      ui->biDirectionCheckbox->setChecked(true);
-    } else {
-      ui->biDirectionCheckbox->setChecked(false);
-    }
-    if (fileBuffer.at(19) == 0x01) {
-      ui->sinCheckBox->setChecked(true);
-    } else {
-      ui->sinCheckBox->setChecked(false);
-    }
-    if (fileBuffer.at(20) == 0x01) {
-      ui->comp_pwmCheckbox->setChecked(true);
-    } else {
-      ui->comp_pwmCheckbox->setChecked(false);
-    }
-    if (fileBuffer.at(21) == 0x01) {
-      ui->varPWMCheckBox->setChecked(true);
-    } else {
-      ui->varPWMCheckBox->setChecked(false);
-    }
-    if (fileBuffer.at(21) == 0x02) {
-      ui->autoPWM->setChecked(true);
-    } else {
-      ui->autoPWM->setChecked(false);
-    }
-
-    if (fileBuffer.at(22) == 0x01) {
-      ui->stuckProtectionBox->setChecked(true);
-    } else {
-      ui->stuckProtectionBox->setChecked(false);
-    }
-    ui->timingAdvanceLCD->display(((fileBuffer.at(23))-10)*0.9375);
-    ui->timingAdvanceSlider->setValue(fileBuffer.at(23));
-    ui->pwmFreqSlider->setValue(fileBuffer.at(24));
-    ui->startupPowerSlider->setValue((uint8_t)fileBuffer.at(25));
-    ui->motorKVSlider->setValue((uint8_t)fileBuffer.at(26));
-    ui->motorPolesSlider->setValue(fileBuffer.at(27));
-    if (fileBuffer.at(28) == 0x01) {
-      ui->brakecheckbox->setChecked(true);
-    } else {
-      ui->brakecheckbox->setChecked(false);
-    }
-
-    if (fileBuffer.at(28) == 0x02) {
-      ui->activeBrakeCheckbox->setChecked(true);
-    } else {
-      ui->activeBrakeCheckbox->setChecked(false);
-    }
-
-    if (fileBuffer.at(29) == 0x01) {
-      ui->antiStallBox->setChecked(true);
-    } else {
-      ui->antiStallBox->setChecked(false);
-    }
-    if (fileBuffer.at(1) == 0) { // if ESC is curently on eeprom version 0
-      ui->beepVolumeSlider->setValue(5);
-      ui->servoLowSlider->setValue(128);
-      ui->servoHighSlider->setValue(128);
-      ui->servoNeutralSlider->setValue(128);
-      ui->servoDeadBandSlider->setValue(50);
-      ui->thirtymsTelemBox->setChecked(false);
-    } else {
-
-      ui->beepVolumeSlider->setValue(fileBuffer.at(30));
-      if (fileBuffer.at(31) == 0x01) {
-        ui->thirtymsTelemBox->setChecked(true);
-      } else {
-        ui->thirtymsTelemBox->setChecked(false);
-      }
-      ui->servoLowSlider->setValue((uint8_t)(fileBuffer.at(32)));
-      ui->servoHighSlider->setValue((uint8_t)(fileBuffer.at(33)));
-      ui->servoNeutralSlider->setValue((uint8_t)(fileBuffer.at(34)));
-      ui->servoDeadBandSlider->setValue((uint8_t)(fileBuffer.at(35)));
-
-      if (fileBuffer.at(36) == 0x01) {
-        ui->lowVoltageCuttoffBox->setChecked(true);
-      } else {
-        ui->lowVoltageCuttoffBox->setChecked(false);
-      }
-      ui->lowVoltageThresholdSlider->setValue((uint8_t)(fileBuffer.at(37)));
-      if (fileBuffer.at(38) == 0x01) {
-        ui->rcCarReverse->setChecked(true);
-      } else {
-        ui->rcCarReverse->setChecked(false);
-      }
-      if (fileBuffer.at(39) == 0x01) {
-        ui->hallSensorCheckbox->setChecked(true);
-      } else {
-        ui->hallSensorCheckbox->setChecked(false);
-      }
-      ui->sineStartupSlider->setValue((uint8_t)(fileBuffer.at(40)));
-      ui->dragBrakeSlider->setValue((uint8_t)(fileBuffer.at(41)));
-
-      ui->runningBrakeStrength->setValue((uint8_t)(fileBuffer.at(42)));
-      if ((uint8_t)(fileBuffer.at(45)) > 10) {
-        ui->sineModePowerSlider->setValue(5);
-      } else {
-        ui->sineModePowerSlider->setValue((uint8_t)(fileBuffer.at(45)));
-      }
-
-      if ((uint8_t)(fileBuffer.at(43)) < 70) {
-        ui->temperatureSlider->setValue(142);
-      } else {
-        ui->temperatureSlider->setValue((uint8_t)(fileBuffer.at(43)));
-      }
-      ui->currentSlider->setValue((uint8_t)(fileBuffer.at(44)));
-      ui->signalComboBox->setCurrentIndex((uint8_t)(fileBuffer.at(46)));
-
-
-    }
-
-    QString name; // 2 bytes
-//    name.append(QChar(fileBuffer.at(5)));
-//    name.append(QChar(fileBuffer.at(6)));
-//    name.append(QChar(fileBuffer.at(7)));
-//    name.append(QChar(fileBuffer.at(8)));
-//    name.append(QChar(fileBuffer.at(9)));
-//    name.append(QChar(fileBuffer.at(10)));
-//    name.append(QChar(fileBuffer.at(11)));
-//    name.append(QChar(fileBuffer.at(12)));
-//    name.append(QChar(fileBuffer.at(13)));
-//    name.append(QChar(fileBuffer.at(14)));
-//    name.append(QChar(fileBuffer.at(15)));
-//    name.append(QChar(fileBuffer.at(16)));
-    ui->FirmwareNameLabel->setText(name);
-
-    QString version = "FW Rev:";
-    QString major = QString::number((uint8_t)fileBuffer.at(3));
-    QString minor = QString::number((uint8_t)fileBuffer.at(4));
-    version.append(major);
-    version.append(".");
-    version.append(minor);
-    ui->FirmwareVerionsLabel->setText(version);
-
-    QChar charas = fileBuffer.at(18);
-    int output = charas.toLatin1();
-    qInfo(" output integer %i", output);
-    eeprom_buffer->clear();
-//     eeprom_buffer = fileBuffer;
-    for (int i = 0; i < buffer_length; i++) {
-      eeprom_buffer->append(fileBuffer.at(i));
-    }
-
-    ui->configFileInfo->setText("Config File:" + filename);
-
-  }
+loadConfig();
 }
 
 void Widget::on_OfflineCheckBox_stateChanged(int arg1)
 {
-  if(ui->OfflineCheckBox->isChecked()){
-    hide4wayButtons(false);
-    hideESCSettings(false);
-    hideEEPROMSettings(false);
-    if (ui->tabWidget->count() == 4) {
-      ui->tabWidget->removeTab(2);
-      ui->tabWidget->removeTab(1);
-      showSingleMotor(true);
-      firstOffline = true;
-      on_loadConfigButton_clicked();
-      ui->writeEEPROM->setHidden(true);
-      ui->writeEEPROM_2->setHidden(true);
-    }
-
-
+   if(ui->OfflineCheckBox->isChecked()){
+     hide4wayButtons(false);
+     hideESCSettings(false);
+     hideEEPROMSettings(false);
+     if (ui->tabWidget->count() == 5) {
+       ui->tabWidget->removeTab(4);
+       ui->tabWidget->removeTab(2);
+       ui->tabWidget->removeTab(1);
+       showSingleMotor(true);
+     firstOffline = true;
+       loadConfig();
+       ui->writeEEPROM->setHidden(true);
+       ui->writeEEPROM_2->setHidden(true);
+   }
 
   }else{
     hide4wayButtons(true);

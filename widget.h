@@ -148,6 +148,8 @@ private slots:
  //   void on_uploadMusic_clicked();
     void resetESC();
 
+    void loadConfig();
+
     void on_dragBrakeSlider_valueChanged(int value);
 
     void on_sineStartupSlider_valueChanged(int value);
