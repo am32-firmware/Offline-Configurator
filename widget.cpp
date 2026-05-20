@@ -301,18 +301,28 @@ if(data.size() != 0){
               four_way->memory_divider_required_four = true;
               four_way->eeprom_address =
                   0x7e00; // this equals an eeprom address of 0x1f800 126kb
+              four_way->firmware_start = 4096;
             }
             if (data[6] == (char)0x1f) {
               qInfo("F0531ESC_1KB_PAGE");
               four_way->memory_divider_required_four = false;
               four_way->eeprom_address =
                   0x7c00; //  eeprom address of 0x7c00 31kb
+              four_way->firmware_start = 4096;
             }
             if (data[6] == (char)0x35) {
               qInfo("F3ESC_2KB_PAGE");
               four_way->memory_divider_required_four = false;
               four_way->eeprom_address =
                   0xF800; // eeprom address of 0x7c00 62kb
+              four_way->firmware_start = 4096;
+            }
+            if (data[6] == (char)0x15) {
+                qInfo("NXP ESC_8KB_PAGE");
+                four_way->memory_divider_required_four = false;
+                four_way->eeprom_address =
+                    0xE000; // eeprom address of 64k-8k
+                four_way->firmware_start = 16384;
             }
             ui->escStatusLabel->setText("Connected");
             four_way->ESC_connected = true;
@@ -632,22 +642,22 @@ void Widget::on_writeBinary_clicked() {
         if (four_way->memory_divider_required_four) {
           if (four_way->direct) {
             sendDirect(onetwentyeight, onetwentyeight.size(),
-                       (4096 + (i * 2048) + (j * chunk_size)) >> 2);
+                       (four_way->firmware_start + (i * 2048) + (j * chunk_size)) >> 2);
           } else {
             writeData(four_way->makeFourWayWriteCommand(
                 onetwentyeight, onetwentyeight.size(),
-                (4096 + (i * 2048) + (j * chunk_size)) >> 2));
+                (four_way->firmware_start + (i * 2048) + (j * chunk_size)) >> 2));
           }
         } else {
           if (four_way->direct) {
             sendDirect(onetwentyeight, onetwentyeight.size(),
-                       (4096 + (i * 2048) + (j * chunk_size)));
+                       (four_way->firmware_start + (i * 2048) + (j * chunk_size)));
           } else {
             qInfo("adress: %d",
-                  4096 + (i * 2048) + (j * chunk_size));
+                  four_way->firmware_start + (i * 2048) + (j * chunk_size));
             writeData(four_way->makeFourWayWriteCommand(
                 onetwentyeight, onetwentyeight.size(),
-                4096 + (i * 2048) +
+                four_way->firmware_start + (i * 2048) +
                     (j * chunk_size))); // increment address every i and j
           }
         }

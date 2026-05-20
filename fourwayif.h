@@ -17,7 +17,7 @@ public:
     QByteArray makeFourWayCommand(uint8_t cmd, uint8_t device_num);
     uint16_t makeCRC(const QByteArray data);
     uint16_t eeprom_address;
-
+    uint16_t firmware_start; 
     bool checkCRC(const QByteArray data , uint16_t buffer_length);
     bool ACK_required();
     bool ACK_received();
