@@ -1,7 +1,7 @@
 #ifndef DEFAULTS_H
 #define DEFAULTS_H
 
-#include <QWidget>
+#include <cstdint>
 
 uint8_t air_starteeprom[48] ={
 
