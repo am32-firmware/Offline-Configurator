@@ -526,9 +526,9 @@ void Widget::on_writeBinary_clicked() {
       // APPLICATION_ADDRESS (e.g. the 16KB bootloader reservation on CAN
       // variants) is rejected with a bad ACK.
       uint16_t chunkAddr = four_way->firmwareChunkAddress(offset);
-      qInfo("flash write: firmware_start=0x%x offset=0x%x flash_addr=0x%08x",
-            four_way->firmware_start, offset,
-            0x08000000u + four_way->firmware_start + offset);
+      qInfo("flash write: firmware_start=0x%x offset=0x%x set_addr=0x%04x flash_addr=0x%08x",
+            four_way->firmware_start, offset, chunkAddr,
+            0x08000000u + ((uint32_t)chunkAddr << four_way->devinfo_v3.address_shift));
       while (four_way->ack_required) {
         if (four_way->direct) {
           sendDirect(onetwentyeight, onetwentyeight.size(), chunkAddr);
@@ -731,13 +731,8 @@ void Widget::on_VerifyFlash_clicked() {
     retries = 0;
     four_way->ack_required = true;
     while (four_way->ack_required) {
-      if (four_way->memory_divider_required_four) {
-        writeData(four_way->makeFourWayReadCommand(
-            128, (four_way->firmware_start + (i * 128)) >> 2));
-      } else {
-        writeData(four_way->makeFourWayReadCommand(
-            128, four_way->firmware_start + (i * 128)));
-      }
+      writeData(four_way->makeFourWayReadCommand(
+          128, four_way->firmwareChunkAddress(i * 128)));
       m_serial->waitForBytesWritten(500);
       while (m_serial->waitForReadyRead(500)) {
       }
@@ -877,7 +872,7 @@ bool Widget::connectMotor(uint8_t motor) {
     // full deviceInfo (protocol version + firmware start) via the magic read.
     // Older bootloaders reject this read and keep flash-size-code defaults.
     four_way->ack_required = true;
-    writeData(four_way->makeFourWayReadCommand(20, ADDRESS_MAGIC_DEVINFO));
+    writeData(four_way->makeFourWayReadCommand(27, ADDRESS_MAGIC_DEVINFO));
     m_serial->waitForBytesWritten(300);
     while (m_serial->waitForReadyRead(300)) {
     }

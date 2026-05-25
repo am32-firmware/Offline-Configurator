@@ -33,7 +33,24 @@ public:
     QByteArray makeFourWayCommand(uint8_t cmd, uint8_t device_num);
     uint16_t makeCRC(const QByteArray data);
     uint16_t eeprom_address;
-    uint16_t firmware_start;
+    uint16_t firmware_start; // pre-v3 byte offset; v3 uses devinfo_v3.firmware_start
+    /*
+      v3 devinfo block read via ADDRESS_MAGIC_DEVINFO (0x23). enabled flips
+      true once parseDevinfoBlock() has validated magic1/magic2 and populated
+      the rest; while enabled, the firmware/filename/eeprom/tune values are
+      the CMD_SET_ADDRESS values to use (already >> address_shift) and
+      override the pre-v3 byte-offset defaults set from FLASH_SIZE_CODE.
+     */
+    struct DevinfoV3 {
+        bool enabled;
+        uint8_t length;
+        uint8_t address_shift;
+        uint16_t firmware_start;
+        uint16_t filename_start;
+        uint16_t eeprom_start;
+        uint16_t tune_start;
+    };
+    DevinfoV3 devinfo_v3;
     uint8_t bootloader_version; // protocol version from deviceInfo byte 8
     bool checkCRC(const QByteArray data , uint16_t buffer_length);
     bool ACK_required();

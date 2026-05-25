@@ -18,7 +18,8 @@ passthrough_started = false;
 ack_type = 1;
 ESC_connected = false;
 bootloader_version = 0;
-firmware_start = 4096; // default; overridden per-MCU or from deviceInfo (v3+)
+firmware_start = 4096; // pre-v3 byte offset; v3 fills devinfo_v3 instead
+devinfo_v3 = {};       // all zero / enabled = false
 }
 
 
@@ -212,7 +213,49 @@ bool FourWayIF::parseDevinfoBlock(const QByteArray &block)
     if (m1 != DEVINFO_MAGIC1 || m2 != DEVINFO_MAGIC2) {
         return false;
     }
-    return parseDeviceInfoAt(block, 8); // deviceInfo follows the two magic words
+    // first parse the 9-byte deviceInfo (version + flash-size-code defaults)
+    bool known = parseDeviceInfoAt(block, 8);
+
+    /*
+      v3 devinfo extension follows the 9-byte deviceInfo (packed), at block
+      offset 8+9 = 17:
+        [17]    length (sizeof the whole struct)
+        [18]    address_shift
+        [19,20] firmware_start  (little-endian)
+        [21,22] filename_start
+        [23,24] eeprom_start
+        [25,26] tune_start
+      The *_start values are the addresses to pass to CMD_SET_ADDRESS (already
+      shifted right by address_shift), so the bootloader's address<<address_shift
+      reconstructs the real flash address.
+    */
+    const int v = 8 + 9; // 17, start of v3 extension
+    // Minimum struct size containing every field we read (length, address_shift,
+    // firmware_start, filename_start, eeprom_start, tune_start). A capped upper
+    // bound guards against a garbage byte being mistaken for a struct length.
+    static const uint8_t DEVINFO_V3_MIN = 27;
+    static const uint8_t DEVINFO_V3_MAX = 64;
+    if (bootloader_version >= BOOTLOADER_PROTOCOL_FW_START &&
+        block.size() >= v + 1) {
+        const uint8_t length = (uint8_t)block[v];
+        if (length < DEVINFO_V3_MIN || length > DEVINFO_V3_MAX ||
+            block.size() < length) {
+            qInfo("v3 devinfo: invalid length=%u (got %d bytes), ignoring",
+                  length, (int)block.size());
+            return known;
+        }
+        devinfo_v3.length         = length;
+        devinfo_v3.address_shift  = (uint8_t)block[v + 1];
+        devinfo_v3.firmware_start = (uint8_t)block[v + 2] | ((uint8_t)block[v + 3] << 8);
+        devinfo_v3.filename_start = (uint8_t)block[v + 4] | ((uint8_t)block[v + 5] << 8);
+        devinfo_v3.eeprom_start   = (uint8_t)block[v + 6] | ((uint8_t)block[v + 7] << 8);
+        devinfo_v3.tune_start     = (uint8_t)block[v + 8] | ((uint8_t)block[v + 9] << 8);
+        devinfo_v3.enabled = true;
+        qInfo("v3 devinfo: len=%u shift=%u fw_start=0x%04x eeprom=0x%04x",
+              devinfo_v3.length, devinfo_v3.address_shift,
+              devinfo_v3.firmware_start, devinfo_v3.eeprom_start);
+    }
+    return known;
 }
 
 
@@ -260,17 +303,10 @@ bool FourWayIF::parseDeviceInfoAt(const QByteArray &data, int base)
         known = false;
     }
 
-    if (bootloader_version >= BOOTLOADER_PROTOCOL_FW_START &&
-        data.size() > base + 10) {
-        // v3 deviceInfo appends FIRMWARE_RELATIVE_START as a little-endian
-        // uint16. Prefer it over the FLASH_SIZE_CODE guess so we flash at the
-        // right offset regardless of the bootloader's flash layout (e.g. CAN
-        // variants reserve more flash for the bootloader).
-        firmware_start =
-            (uint8_t)data[base + 9] | ((uint8_t)data[base + 10] << 8);
-        qInfo("firmware_start from deviceInfo: 0x%x", firmware_start);
-    }
-
+    // The v3 firmware_start (and the rest of the extended layout) is NOT in the
+    // 9-byte deviceInfo; it is read separately from ADDRESS_MAGIC_DEVINFO and
+    // parsed in parseDevinfoBlock(). Here we only have the flash-size-code
+    // defaults, used for pre-v3 bootloaders.
     ESC_connected = true;
     return known;
 }
@@ -331,6 +367,13 @@ uint16_t FourWayIF::eepromWriteAddress() const
 
 uint16_t FourWayIF::firmwareChunkAddress(uint32_t offset) const
 {
+    if (devinfo_v3.enabled) {
+        // devinfo_v3.firmware_start is the CMD_SET_ADDRESS value of the app
+        // base; flash addresses step in units of (1<<address_shift) bytes
+        return (uint16_t)(devinfo_v3.firmware_start +
+                          (offset >> devinfo_v3.address_shift));
+    }
+    // pre-v3: firmware_start is a byte offset; divider MCUs shift by 2
     uint32_t addr = firmware_start + offset;
     if (memory_divider_required_four) {
         addr >>= 2;

@@ -116,19 +116,29 @@ static bool openAndConnect(QSerialPort &sp, FourWayIF &fw, const QString &port,
     // struct via the magic address to get those. On older bootloaders this
     // read fails and we keep the flash-size-code defaults.
     QByteArray block;
-    if (fourWayTxn(sp, fw, fw.makeFourWayReadCommand(20, ADDRESS_MAGIC_DEVINFO),
+    // read the full v3 devinfo struct (magic1/2 + 9-byte deviceInfo + 9-byte
+    // v3 extension = 27 bytes); older bootloaders just return fewer bytes
+    if (fourWayTxn(sp, fw, fw.makeFourWayReadCommand(27, ADDRESS_MAGIC_DEVINFO),
                    block, 300, 2) &&
         fw.parseDevinfoBlock(block)) {
-        printf("devinfo via magic read: version=%u firmware_start=0x%04x\n",
-               fw.bootloader_version, fw.firmware_start);
+        printf("devinfo via magic read: version=%u firmware_start=0x%04x "
+               "address_shift=%u\n",
+               fw.bootloader_version,
+               fw.devinfo_v3.firmware_start,
+               fw.devinfo_v3.address_shift);
     } else {
         printf("devinfo magic read unavailable; using flash-size-code defaults\n");
     }
 
-    printf("connected: bootloader_version=%u eeprom_address=0x%04x "
-           "firmware_start=0x%04x divider=%d\n",
-           fw.bootloader_version, fw.eeprom_address, fw.firmware_start,
-           (int)fw.memory_divider_required_four);
+    printf("connected: bootloader_version=%u eeprom_address=0x%04x ",
+           fw.bootloader_version, fw.eeprom_address);
+    if (fw.devinfo_v3.enabled) {
+        printf("v3 firmware_start=0x%04x address_shift=%u\n",
+               fw.devinfo_v3.firmware_start, fw.devinfo_v3.address_shift);
+    } else {
+        printf("firmware_start=0x%04x divider=%d\n",
+               fw.firmware_start, (int)fw.memory_divider_required_four);
+    }
     return true;
 }
 
