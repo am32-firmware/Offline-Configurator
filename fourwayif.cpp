@@ -336,7 +336,14 @@ bool FourWayIF::parseFourWayResponse(const QByteArray &resp, QByteArray &payload
     ack_type = FW_ACK_OK;
 
     if (resp[1] == (char)0x3a) { // read response: payload starts at byte 5
-        for (int i = 0; i < (uint8_t)resp[4]; i++) {
+        // The 4-way length sentinel uses 0 to encode 256 (same convention as
+        // makeFourWayReadCommand). Decode it the same way here so 256-byte
+        // reads aren't silently truncated to 0 bytes.
+        int payload_len = (uint8_t)resp[4];
+        if (payload_len == 0) {
+            payload_len = 256;
+        }
+        for (int i = 0; i < payload_len; i++) {
             payloadOut.append(resp[i + 5]);
         }
     }
