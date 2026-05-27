@@ -334,6 +334,16 @@ uint16_t FourWayIF::eepromWriteAddress() const {
   return eeprom_address;
 }
 
+uint16_t FourWayIF::tuneAddress() const {
+  if (devinfo_v3.enabled) {
+    // v3: tune_start is already a CMD_SET_ADDRESS value
+    return devinfo_v3.tune_start;
+  }
+  // pre-v3: tunes live 48 bytes past the EEPROM region in *byte* offset.
+  // Older bootloaders had no address_shift, so this stayed correct then.
+  return eeprom_address + 48;
+}
+
 uint16_t FourWayIF::firmwareChunkAddress(uint32_t offset) const {
   if (devinfo_v3.enabled) {
     // devinfo_v3.firmware_start is the CMD_SET_ADDRESS value of the app
