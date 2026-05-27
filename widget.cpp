@@ -812,6 +812,46 @@ bool Widget::connectMotor(uint8_t motor) {
       ui->escStatusLabel_2->setText("Can Not Connect");
       return false;
     }
+
+    /*
+      v3 magic-devinfo read in direct mode. Without this, devinfo_v3
+      stays disabled and firmwareChunkAddress() falls back to the
+      flashcode-derived firmware_start, which is wrong for v3 CAN
+      builds (e.g. G431 CAN at 0x4000). Older bootloaders reject the
+      read; we just leave devinfo_v3.enabled == false in that case.
+     */
+    {
+      writeData(RL->setAddress(ADDRESS_MAGIC_DEVINFO));
+      m_serial->waitForBytesWritten(500);
+      while (m_serial->waitForReadyRead(500)) {
+      }
+      QByteArray sa = m_serial->readAll();
+      if (sa.size() && sa[sa.size() - 1] == char(0x30)) {
+        writeData(RL->readFlash(27));
+        m_serial->waitForBytesWritten(300);
+        while (m_serial->waitForReadyRead(300)) {
+        }
+        QByteArray rf = m_serial->readAll();
+        // expected: 27 payload + 2 CRC + 1 ACK = 30 bytes. Some adapters
+        // prepend a 4-byte echo of the command — same heuristic as the
+        // existing direct EEPROM read does for "== 87" further below.
+        // The CRC is computed by the ESC over data+CRC, so the prefix
+        // must be stripped BEFORE checkCRC, otherwise the CRC always
+        // fails on echoing adapters and devinfo_v3 stays disabled.
+        if (rf.size() == 34) {
+          rf.remove(0, 4);
+        }
+        if (rf.size() >= 30 && rf[rf.size() - 1] == char(0x30) &&
+            RL->checkCRC(rf, rf.size() - 1)) {
+          QByteArray block;
+          for (int i = 0; i < rf.size() - 3; i++) {
+            block.append(rf[i]);
+          }
+          four_way->parseDevinfoBlock(block);
+        }
+      }
+    }
+
     writeData(RL->setAddress(eepromReadAddress()));
     m_serial->waitForBytesWritten(500);
     while (m_serial->waitForReadyRead(500)) {
