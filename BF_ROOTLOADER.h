@@ -2,7 +2,7 @@
 #define BF_ROOTLOADER_H
 
 #endif // BF_ROOTLOADER_H
-#include <QMessageBox>
+#include <QByteArray>
 
 class BF_ROOTLOADER{
 public:

@@ -1,6 +1,6 @@
 #include "BF_ROOTLOADER.h"
 
-#include <QMessageBox>
+#include <QByteArray>
 
 typedef union __attribute__ ((packed)) {
     uint8_t bytes[2];

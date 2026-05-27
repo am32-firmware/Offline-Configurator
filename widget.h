@@ -226,6 +226,8 @@ private:
     void hideEEPROMSettings(bool b);
     void allup();
     bool connectMotor(uint8_t motor);
+    uint16_t eepromWriteAddress();
+    uint16_t eepromReadAddress();
     void sendFirstEeprom(uint8_t eeprom_type);
     void closeSerialPort();
     void readInitData();
