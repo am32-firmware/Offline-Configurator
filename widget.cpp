@@ -626,7 +626,7 @@ void Widget::on_writeBinary_clicked() {
 bool Widget::getMusic() {
   four_way->ack_required = true;
   if (four_way->direct) {
-    writeData(RL->setAddress(four_way->eeprom_address + 48));
+    writeData(RL->setAddress(four_way->tuneAddress()));
     m_serial->waitForBytesWritten(500);
     while (m_serial->waitForReadyRead(500)) {
     }
@@ -663,7 +663,7 @@ bool Widget::getMusic() {
     while (four_way->ack_required) {
 
       writeData(
-          four_way->makeFourWayReadCommand(128, four_way->eeprom_address + 48));
+          four_way->makeFourWayReadCommand(128, four_way->tuneAddress()));
       m_serial->waitForBytesWritten(500);
       while (m_serial->waitForReadyRead(1000)) {
       }
@@ -689,12 +689,12 @@ bool Widget::writeMusic() {
       musicBufferOut.append(music_buffer->at(i));
     }
     if (four_way->direct) {
-      sendDirect(musicBufferOut, 128, four_way->eeprom_address + 48);
+      sendDirect(musicBufferOut, 128, four_way->tuneAddress());
 
     } else {
 
       writeData(four_way->makeFourWayWriteCommand(
-          musicBufferOut, 128, four_way->eeprom_address + 48));
+          musicBufferOut, 128, four_way->tuneAddress()));
 
       m_serial->waitForBytesWritten(500);
       while (m_serial->waitForReadyRead(500)) {

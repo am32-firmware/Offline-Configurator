@@ -102,6 +102,11 @@ public:
     // offset, honouring the >>2 address shift on divider MCUs.
     uint16_t firmwareChunkAddress(uint32_t offset) const;
 
+    // CMD_SET_ADDRESS value for the music/tune region. With v3 we use the
+    // bootloader-supplied tune_start; without v3 we fall back to
+    // eeprom_address + 48 (which is only correct on non-shifted parts).
+    uint16_t tuneAddress() const;
+
 private:
     // parse deviceInfo bytes where deviceInfo[0] is at data[base]
     bool parseDeviceInfoAt(const QByteArray &data, int base);
