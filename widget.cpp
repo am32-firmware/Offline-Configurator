@@ -517,6 +517,16 @@ void Widget::on_writeBinary_clicked() {
           break;
         }
       }
+      /*
+        the G431 (and any STM32 with doubleword-only programming) rejects
+        non-8-byte-aligned chunk writes with ACK_D_GENERAL_ERROR. Pad the
+        tail of the final partial chunk with 0xFF so eeprom.c's
+        save_flash_nolib() can program it. 0xFF is the erased-flash value
+        so the verify pass still matches the binary's logical size.
+       */
+      while ((onetwentyeight.size() & 7) != 0) {
+        onetwentyeight.append((char)0xFF);
+      }
       four_way->ack_required = true;
       // four_way->ack_received = false;
       retries = 0;
