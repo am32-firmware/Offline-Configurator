@@ -1,4 +1,4 @@
-QT += core serialport
+QT += core serialport network
 QT -= gui
 
 CONFIG += c++11 console
@@ -16,10 +16,12 @@ SOURCES += \
     BF_ROOTLOADER.cpp \
     fourwayif.cpp \
     hexfile.cpp \
+    sitltransport.cpp \
     cli_main.cpp
 
 HEADERS += \
     BF_ROOTLOADER.h \
     fourwayif.h \
     hexfile.h \
+    sitltransport.h \
     defaults.h

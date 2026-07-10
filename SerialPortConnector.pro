@@ -1,6 +1,7 @@
 QT += core gui
 QT += widgets
 QT += serialport
+QT += network
 
 CONFIG += c++11
 
@@ -28,6 +29,7 @@ SOURCES += \
     hexfile.cpp \
     main.cpp \
     music.cpp \
+    sitltransport.cpp \
     widget.cpp
 
 HEADERS += \
@@ -37,6 +39,7 @@ HEADERS += \
     fourwayif.h \
     hexfile.h \
     music.h \
+    sitltransport.h \
     widget.h
 
 FORMS += \
