@@ -1,3 +1,4 @@
+#include "sitltransport.h"
 #include "widget.h"
 #include "BF_ROOTLOADER.h"
 #include "defaults.h"
@@ -345,6 +346,8 @@ void Widget::serialInfoStuff() {
 
   ui->serialSelectorBox->clear();
   ui->serialSelectorBox->addItem("Select Port");
+  // synthetic entry for the AM32 bootloader SITL over UDP (direct mode)
+  ui->serialSelectorBox->addItem("SITL 127.0.0.1:57733");
 
   QString s;
 
@@ -372,39 +375,65 @@ void Widget::serialInfoStuff() {
 }
 
 void Widget::connectSerial() {
-  if (ui->checkBox_2->isChecked()) {
+  const QString sel = ui->serialSelectorBox->currentText();
+  const bool useSitl = sel.startsWith("SITL");
+
+  // the SITL bootloader speaks the direct 19200 1-wire protocol
+  const bool direct = useSitl || ui->checkBox_2->isChecked();
+  if (direct) {
     four_way->direct = true;
-    m_serial->setBaudRate(m_serial->Baud19200);
     if (ui->tabWidget->count() == 4) {
       ui->tabWidget->removeTab(2);
       showSingleMotor(true);
     }
-
   } else {
     ui->tabWidget->insertTab(2, ui->tab_3, "Motor Control");
     showSingleMotor(false);
     four_way->direct = false;
-    m_serial->setBaudRate(m_serial->Baud115200);
   }
 
-  m_serial->setPortName(ui->serialSelectorBox->currentText());
-
-  m_serial->setDataBits(m_serial->Data8);
-  m_serial->setParity(m_serial->NoParity);
-  m_serial->setStopBits(m_serial->OneStop);
-  m_serial->setFlowControl(m_serial->NoFlowControl);
+  // swap in the right transport for the chosen port
+  if (useSitl) {
+    if (m_serial) {
+      m_serial->deleteLater();
+    }
+    m_serial = new SitlUdpTransport(sel.section(' ', 1, 1).isEmpty()
+                                        ? QString("sitl:57733")
+                                        : QString("sitl:%1").arg(sel.section(' ', 1, 1)),
+                                    this);
+  } else {
+    QSerialPort *sp = qobject_cast<QSerialPort *>(m_serial);
+    if (!sp) {
+      // previous connection was a SITL transport; restore a serial port
+      if (m_serial) {
+        m_serial->deleteLater();
+      }
+      sp = new QSerialPort(this);
+      m_serial = sp;
+    }
+    sp->setBaudRate(ui->checkBox_2->isChecked() ? sp->Baud19200 : sp->Baud115200);
+    sp->setPortName(sel);
+    sp->setDataBits(sp->Data8);
+    sp->setParity(sp->NoParity);
+    sp->setStopBits(sp->OneStop);
+    sp->setFlowControl(sp->NoFlowControl);
+  }
 
   if (m_serial->open(QIODevice::ReadWrite)) {
     ui->ConnectedButton->setCheckable(true);
     ui->ConnectedButton->setChecked(true);
     ui->escStatusLabel->setText("Select Motor");
-    showStatusMessage(tr("Connected to %1 : %2, %3, %4, %5, %6")
-                          .arg(m_serial->portName())
-                          .arg(m_serial->dataBits())
-                          .arg(m_serial->baudRate())
-                          .arg(m_serial->parity())
-                          .arg(m_serial->stopBits())
-                          .arg(m_serial->flowControl()));
+    if (QSerialPort *sp = qobject_cast<QSerialPort *>(m_serial)) {
+      showStatusMessage(tr("Connected to %1 : %2, %3, %4, %5, %6")
+                            .arg(sp->portName())
+                            .arg(sp->dataBits())
+                            .arg(sp->baudRate())
+                            .arg(sp->parity())
+                            .arg(sp->stopBits())
+                            .arg(sp->flowControl()));
+    } else {
+      showStatusMessage(tr("Connected to %1").arg(sel));
+    }
 
     hide4wayButtons(false);
     QByteArray passthroughenable2;  // payload  empty here

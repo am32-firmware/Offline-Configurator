@@ -3,6 +3,7 @@
 
 #include <QWidget>
 #include <QSerialPort>
+#include <QIODevice>
 #include <QLabel>
 #include <QComboBox>
 #include <functional>
@@ -278,7 +279,7 @@ class Widget : public QWidget {
 
   uint8_t retries = 0;
   uint8_t max_retries = 16;
-  uint8_t number_of_ports = 0;
+  int number_of_ports = -1;  // -1 forces the first serialInfoStuff() to build the list
 
   //    typedef struct ioMem_s {
   //        uint8_t D_NUM_BYTES;
@@ -291,7 +292,7 @@ class Widget : public QWidget {
   FourWayIF *four_way = nullptr;
   BF_ROOTLOADER *RL = nullptr;
   OutConsole *msg_console = nullptr;
-  QSerialPort *m_serial = nullptr;
+  QIODevice *m_serial = nullptr;  // QSerialPort or SitlUdpTransport
   QLabel *statuslabel = nullptr;
   QByteArray *input_buffer = nullptr;
   QByteArray *bluejay_tune = nullptr;
