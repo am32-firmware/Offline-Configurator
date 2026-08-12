@@ -162,7 +162,7 @@ jobs:
         path: SerialPortConnector*.AppImage
 
   build-macos:
-    runs-on: macos-latest  # ARM64 runner, builds universal binary
+    runs-on: macos-15
 
     steps:
     - uses: actions/checkout@v4
