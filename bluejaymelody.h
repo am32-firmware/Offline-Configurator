@@ -3,6 +3,4 @@
 
 void parseRTTL(QByteArray rttlmelody);
 
-
-
-#endif // BLUEJAYMELODY_H
+#endif  // BLUEJAYMELODY_H

@@ -1,0 +1,13 @@
+BasedOnStyle: Google
+IndentWidth: 2
+ColumnLimit: 0
+PointerAlignment: Right
+ReferenceAlignment: Right
+BreakBeforeBraces: Attach
+NamespaceIndentation: None
+SpaceBeforeParens: ControlStatements
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLoopsOnASingleLine: false
+AllowShortFunctionsOnASingleLine: All
+SortIncludes: false
+IncludeBlocks: Preserve

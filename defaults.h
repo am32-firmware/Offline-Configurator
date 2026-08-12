@@ -6,7 +6,7 @@
 uint8_t air_starteeprom[48] ={
 
     0x01,              // eeprom start byte, must be 1
-    0x03,              // eeprom version 0-255
+    0x04,              // eeprom version 0-255
     0x01,              // bootloader version 0-255
     0x01,              // firmware version major
     0x23,              // firmware version minor 50
@@ -18,7 +18,8 @@ uint8_t air_starteeprom[48] ={
     0x00,              //current control I value default 0
     0x32,              //current control D value x 10 default 50 = 500
     0x02,              // active brake power
-    0x30, 0x35, 0x31, 0x20,       // reserved 4 bytes
+    0x00,              // brake on zero throttle options default 0
+    0x35, 0x31, 0x20,       // reserved 4 bytes
     0x00,      // direction reversed byte 17
     0x00,      // bidectional mode 1 for on 0 for off byte 18
     0x00,      // sinusoidal startup  byte 19

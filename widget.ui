@@ -6,7 +6,7 @@
    <rect>
     <x>0</x>
     <y>0</y>
-    <width>908</width>
+    <width>974</width>
     <height>611</height>
    </rect>
   </property>
@@ -31,7 +31,7 @@
        <rect>
         <x>0</x>
         <y>0</y>
-        <width>884</width>
+        <width>950</width>
         <height>587</height>
        </rect>
       </property>
@@ -264,7 +264,7 @@
            <rect>
             <x>-5</x>
             <y>80</y>
-            <width>861</width>
+            <width>916</width>
             <height>445</height>
            </rect>
           </property>
@@ -295,7 +295,7 @@
              <rect>
               <x>5</x>
               <y>5</y>
-              <width>841</width>
+              <width>891</width>
               <height>401</height>
              </rect>
             </property>
@@ -375,7 +375,7 @@
               <rect>
                <x>0</x>
                <y>45</y>
-               <width>841</width>
+               <width>881</width>
                <height>366</height>
               </rect>
              </property>
@@ -756,12 +756,12 @@
                <rect>
                 <x>500</x>
                 <y>160</y>
-                <width>111</width>
+                <width>281</width>
                 <height>21</height>
                </rect>
               </property>
               <property name="text">
-               <string>Brake On Stop</string>
+               <string>Brake on 0 rpm, motor stopped</string>
               </property>
              </widget>
              <widget class="QCheckBox" name="antiStallBox">
@@ -996,7 +996,7 @@
                <rect>
                 <x>340</x>
                 <y>190</y>
-                <width>116</width>
+                <width>136</width>
                 <height>16</height>
                </rect>
               </property>
@@ -1009,7 +1009,7 @@
                <rect>
                 <x>340</x>
                 <y>220</y>
-                <width>101</width>
+                <width>121</width>
                 <height>16</height>
                </rect>
               </property>
@@ -1066,7 +1066,7 @@
                <rect>
                 <x>340</x>
                 <y>250</y>
-                <width>96</width>
+                <width>116</width>
                 <height>16</height>
                </rect>
               </property>
@@ -1079,7 +1079,7 @@
                <rect>
                 <x>345</x>
                 <y>285</y>
-                <width>106</width>
+                <width>131</width>
                 <height>16</height>
                </rect>
               </property>
@@ -1303,7 +1303,7 @@
               <property name="geometry">
                <rect>
                 <x>500</x>
-                <y>185</y>
+                <y>220</y>
                 <width>146</width>
                 <height>31</height>
                </rect>
@@ -1319,7 +1319,7 @@
               <property name="geometry">
                <rect>
                 <x>545</x>
-                <y>225</y>
+                <y>260</y>
                 <width>111</width>
                 <height>16</height>
                </rect>
@@ -1338,7 +1338,7 @@
               <property name="geometry">
                <rect>
                 <x>500</x>
-                <y>220</y>
+                <y>255</y>
                 <width>41</width>
                 <height>24</height>
                </rect>
@@ -1351,8 +1351,8 @@
               <property name="geometry">
                <rect>
                 <x>665</x>
-                <y>225</y>
-                <width>151</width>
+                <y>260</y>
+                <width>171</width>
                 <height>16</height>
                </rect>
               </property>
@@ -1364,13 +1364,76 @@
               <property name="geometry">
                <rect>
                 <x>500</x>
-                <y>250</y>
+                <y>285</y>
                 <width>326</width>
                 <height>16</height>
                </rect>
               </property>
               <property name="text">
                <string>Warning. can damage motors if set too high, use caution</string>
+              </property>
+             </widget>
+             <widget class="QComboBox" name="brakeComboBox">
+              <property name="geometry">
+               <rect>
+                <x>500</x>
+                <y>190</y>
+                <width>216</width>
+                <height>26</height>
+               </rect>
+              </property>
+              <item>
+               <property name="text">
+                <string>Default</string>
+               </property>
+              </item>
+              <item>
+               <property name="text">
+                <string>Coast on 0 throttle</string>
+               </property>
+              </item>
+              <item>
+               <property name="text">
+                <string>Brake on 0 throttle</string>
+               </property>
+              </item>
+              <item>
+               <property name="text">
+                <string>1 second delay then Brake on Stop</string>
+               </property>
+              </item>
+              <item>
+               <property name="text">
+                <string>2 second delay then Brake on Stop</string>
+               </property>
+              </item>
+              <item>
+               <property name="text">
+                <string>3 second delay then Brake on Stop</string>
+               </property>
+              </item>
+              <item>
+               <property name="text">
+                <string>4 second delay then Brake on Stop</string>
+               </property>
+              </item>
+              <item>
+               <property name="text">
+                <string>5 second delay then Brake on Stop</string>
+               </property>
+              </item>
+             </widget>
+             <widget class="QLabel" name="label_42">
+              <property name="geometry">
+               <rect>
+                <x>725</x>
+                <y>195</y>
+                <width>146</width>
+                <height>20</height>
+               </rect>
+              </property>
+              <property name="text">
+               <string>Zero Throttle Behavior</string>
               </property>
              </widget>
             </widget>

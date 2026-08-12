@@ -3,14 +3,17 @@
 #include "defaults.h"
 #include "fourwayif.h"
 #include "ui_widget.h"
-//#include "bluejaymelody.h"
+// #include "bluejaymelody.h"
 #include "music.h"
 
+#include <QCheckBox>
 #include <QComboBox>
 #include <QFile>
 #include <QFileDialog>
+#include <QLineEdit>
 #include <QMessageBox>
 #include <QScrollBar>
+#include <QSlider>
 #include <QtSerialPort/QSerialPort>
 #include <QSerialPortInfo>
 #include <QTextStream>
@@ -20,16 +23,17 @@
 #include <QThread>
 
 Widget::Widget(QWidget *parent)
-    : QWidget(parent), ui(new Ui::Widget), four_way(new FourWayIF),
-      RL(new BF_ROOTLOADER),
+    : QWidget(parent), ui(new Ui::Widget), four_way(new FourWayIF), RL(new BF_ROOTLOADER),
       //  msg_console(new OutConsole),
-      m_serial(new QSerialPort(this)), input_buffer(new QByteArray),
-      bluejay_tune(new QByteArray), eeprom_buffer(new QByteArray),
+      m_serial(new QSerialPort(this)),
+      input_buffer(new QByteArray),
+      bluejay_tune(new QByteArray),
+      eeprom_buffer(new QByteArray),
       music_buffer(new QByteArray) {
   ui->setupUi(this);
-  //ui->tabWidget->removeTab(4); // todo make these visible
-  ui->tabWidget->removeTab(5);   // remove led tab for now
-  this->setWindowTitle("ESC Config Tool 1.95 - for firmware version 2.19 and higher");
+  // ui->tabWidget->removeTab(4); // todo make these visible
+  ui->tabWidget->removeTab(5);  // remove led tab for now
+  this->setWindowTitle("ESC Config Tool 1.96 - For firmware version 2.21 and higher");
 
   serialInfoStuff();
 
@@ -48,9 +52,9 @@ Widget::Widget(QWidget *parent)
   hideESCSettings(true);
   hideEEPROMSettings(true);
   ui->writeBinary->setHidden(true);
-  //ui->VerifyFlash->setHidden(true);
-  //ui->MusicTextEdit->setHidden(false);
-  //ui->uploadMusic->setHidden(false);
+  // ui->VerifyFlash->setHidden(true);
+  // ui->MusicTextEdit->setHidden(false);
+  // ui->uploadMusic->setHidden(false);
 
   ui->passthoughButton->setHidden(true);
   ui->endPassthrough->setHidden(true);
@@ -58,6 +62,248 @@ Widget::Widget(QWidget *parent)
 }
 
 Widget::~Widget() { delete ui; }
+
+// ---------------------------------------------------------------------------
+// EEPROM <-> UI field table
+//
+// The 48-byte EEPROM layout (see defaults.h) is bound to UI controls in four
+// places: reading settings from a connected ESC (connectMotor), reading
+// settings from a saved .bin (loadConfig), and writing settings back to a
+// byte buffer for flashing (on_writeEEPROM_clicked) or saving to disk
+// (on_saveConfigButton_clicked). Those used to be four hand-written ~90-line
+// blocks that had to be kept in sync by hand. eepromFieldTable() is now the
+// single place that lists every field's offset, valid range and UI control;
+// applyBufferToUi()/buildBufferFromUi() walk it generically.
+namespace {
+
+EepromField makeCheckboxField(int offset, const char *name, QCheckBox *box) {
+  EepromField f;
+  f.offset = offset;
+  f.name = name;
+  f.minValue = 0;
+  f.maxValue = 1;
+  f.toUi = [box](uint8_t v) { box->setChecked(v == 0x01); };
+  f.fromUi = [box]() -> uint8_t { return box->isChecked() ? 0x01 : 0x00; };
+  return f;
+}
+
+EepromField makeSliderField(int offset, const char *name, int minV, int maxV,
+                            QSlider *slider) {
+  EepromField f;
+  f.offset = offset;
+  f.name = name;
+  f.minValue = minV;
+  f.maxValue = maxV;
+  f.toUi = [slider](uint8_t v) { slider->setValue(v); };
+  f.fromUi = [slider]() -> uint8_t { return (uint8_t)slider->value(); };
+  return f;
+}
+
+EepromField makeComboBoxField(int offset, const char *name, int minV, int maxV,
+                              QComboBox *box) {
+  EepromField f;
+  f.offset = offset;
+  f.name = name;
+  f.minValue = minV;
+  f.maxValue = maxV;
+  f.toUi = [box](uint8_t v) { box->setCurrentIndex(v); };
+  f.fromUi = [box]() -> uint8_t { return (uint8_t)box->currentIndex(); };
+  return f;
+}
+
+// Current-limit line edits display the raw byte multiplied by `scale`.
+EepromField makeScaledLineEditField(int offset, const char *name, int minV,
+                                    int maxV, QLineEdit *edit, int scale) {
+  EepromField f;
+  f.offset = offset;
+  f.name = name;
+  f.minValue = minV;
+  f.maxValue = maxV;
+  f.toUi = [edit, scale](uint8_t v) {
+    edit->setText(QString::number((int)v * scale));
+  };
+  f.fromUi = [edit, scale]() -> uint8_t {
+    return (uint8_t)(edit->text().toInt() / scale);
+  };
+  return f;
+}
+
+// Two checkboxes packed into one byte as a 3-way exclusive choice:
+// neither checked -> 0, boxOne -> 1, boxTwo -> 2.
+EepromField makeExclusiveCheckboxField(int offset, const char *name,
+                                       QCheckBox *boxOne, QCheckBox *boxTwo) {
+  EepromField f;
+  f.offset = offset;
+  f.name = name;
+  f.minValue = 0;
+  f.maxValue = 2;
+  f.toUi = [boxOne, boxTwo](uint8_t v) {
+    boxOne->setChecked(v == 0x01);
+    boxTwo->setChecked(v == 0x02);
+  };
+  f.fromUi = [boxOne, boxTwo]() -> uint8_t {
+    if (boxOne->isChecked())
+      return 0x01;
+    if (boxTwo->isChecked())
+      return 0x02;
+    return 0x00;
+  };
+  return f;
+}
+
+}  // namespace
+
+std::vector<EepromField> Widget::eepromFieldTable() {
+  std::vector<EepromField> f;
+
+  f.push_back(makeSliderField(5, "maxRoc", 1, 200, ui->maxRocSlider));
+  f.push_back(makeSliderField(6, "minDuty", 0, 50, ui->minDutySlider));
+  f.push_back(makeCheckboxField(7, "disableStickCalib", ui->disableStickCalibCheckbox));
+  f.push_back(makeSliderField(8, "absoluteVoltageCutoff", 0, 99, ui->absoluteVoltageSlider));
+  f.push_back(makeScaledLineEditField(9, "currentLimitP", 0, 500, ui->currentLimitPedit, 2));
+  f.push_back(makeScaledLineEditField(10, "currentLimitI", 0, 255, ui->currentLimitIedit, 1));
+  f.push_back(makeScaledLineEditField(11, "currentLimitD", 0, 500, ui->currentLimitDedit, 2));
+  f.push_back(makeSliderField(12, "activeBrakePower", 0, 10, ui->activeBrakeSlider));
+  f.push_back(makeComboBoxField(13, "brakeType", 0, 7, ui->brakeComboBox));
+
+  f.push_back(makeCheckboxField(17, "directionReversed", ui->rvCheckBox));
+  f.push_back(makeCheckboxField(18, "bidirectionalMode", ui->biDirectionCheckbox));
+  f.push_back(makeCheckboxField(19, "sinusoidalStartup", ui->sinCheckBox));
+  f.push_back(makeCheckboxField(20, "complementaryPwm", ui->comp_pwmCheckbox));
+  f.push_back(makeExclusiveCheckboxField(21, "pwmFrequencyMode", ui->varPWMCheckBox, ui->autoPWM));
+  f.push_back(makeCheckboxField(22, "stuckRotorProtection", ui->stuckProtectionBox));
+  f.push_back(makeSliderField(23, "timingAdvance", 10, 42, ui->timingAdvanceSlider));
+  f.push_back(makeSliderField(24, "pwmFrequency", 8, 144, ui->pwmFreqSlider));
+  f.push_back(makeSliderField(25, "startupPower", 50, 150, ui->startupPowerSlider));
+  f.push_back(makeSliderField(26, "motorKV", 0, 255, ui->motorKVSlider));
+  f.push_back(makeSliderField(27, "motorPoles", 2, 36, ui->motorPolesSlider));
+  f.push_back(makeExclusiveCheckboxField(28, "brakeOnStopMode", ui->brakecheckbox, ui->activeBrakeCheckbox));
+  f.push_back(makeCheckboxField(29, "antiStallProtection", ui->antiStallBox));
+
+  // Fields 30-35 (eeprom version 0x01+): forced to legacy defaults instead of
+  // read from the buffer when talking to a device still on eeprom version 0.
+  {
+    EepromField beep = makeSliderField(30, "beepVolume", 0, 11, ui->beepVolumeSlider);
+    beep.hasLegacyDefault = true;
+    beep.legacyDefault = 5;
+    f.push_back(beep);
+
+    EepromField telem = makeCheckboxField(31, "telemetry30ms", ui->thirtymsTelemBox);
+    telem.hasLegacyDefault = true;
+    telem.legacyDefault = 0x00;
+    f.push_back(telem);
+
+    EepromField servoLow = makeSliderField(32, "servoLow", 0, 255, ui->servoLowSlider);
+    servoLow.hasLegacyDefault = true;
+    servoLow.legacyDefault = 128;
+    f.push_back(servoLow);
+
+    EepromField servoHigh = makeSliderField(33, "servoHigh", 0, 255, ui->servoHighSlider);
+    servoHigh.hasLegacyDefault = true;
+    servoHigh.legacyDefault = 128;
+    f.push_back(servoHigh);
+
+    EepromField servoNeutral = makeSliderField(34, "servoNeutral", 0, 255, ui->servoNeutralSlider);
+    servoNeutral.hasLegacyDefault = true;
+    servoNeutral.legacyDefault = 128;
+    f.push_back(servoNeutral);
+
+    EepromField servoDeadBand = makeSliderField(35, "servoDeadBand", 1, 100, ui->servoDeadBandSlider);
+    servoDeadBand.hasLegacyDefault = true;
+    servoDeadBand.legacyDefault = 50;
+    f.push_back(servoDeadBand);
+  }
+
+  // Fields 36-46 (eeprom version 0x01+): left untouched on read when talking
+  // to a device still on eeprom version 0 (matches original behavior).
+  {
+    EepromField lowVCutoff = makeCheckboxField(36, "lowVoltageCutoff", ui->lowVoltageCuttoffBox);
+    lowVCutoff.versionGatedSkip = true;
+    f.push_back(lowVCutoff);
+
+    EepromField lowVThresh = makeSliderField(37, "lowVoltageThreshold", 0, 100, ui->lowVoltageThresholdSlider);
+    lowVThresh.versionGatedSkip = true;
+    f.push_back(lowVThresh);
+
+    EepromField rcReverse = makeCheckboxField(38, "rcCarReverse", ui->rcCarReverse);
+    rcReverse.versionGatedSkip = true;
+    f.push_back(rcReverse);
+
+    EepromField hallSensors = makeCheckboxField(39, "hallSensors", ui->hallSensorCheckbox);
+    hallSensors.versionGatedSkip = true;
+    f.push_back(hallSensors);
+
+    EepromField sineStartup = makeSliderField(40, "sineStartupRange", 5, 25, ui->sineStartupSlider);
+    sineStartup.versionGatedSkip = true;
+    f.push_back(sineStartup);
+
+    EepromField dragBrake = makeSliderField(41, "dragBrakeStrength", 1, 10, ui->dragBrakeSlider);
+    dragBrake.versionGatedSkip = true;
+    f.push_back(dragBrake);
+
+    EepromField runningBrake = makeSliderField(42, "runningBrakeStrength", 1, 10, ui->runningBrakeStrength);
+    runningBrake.versionGatedSkip = true;
+    f.push_back(runningBrake);
+
+    EepromField temperature = makeSliderField(43, "temperatureLimit", 70, 145, ui->temperatureSlider);
+    temperature.versionGatedSkip = true;
+    {  // raw < 70 is legacy/uninitialized data -> falls back to the "disabled" value
+      QSlider *slider = ui->temperatureSlider;
+      temperature.toUi = [slider](uint8_t v) { slider->setValue(v < 70 ? 142 : v); };
+    }
+    f.push_back(temperature);
+
+    EepromField current = makeSliderField(44, "currentProtectionLevel", 1, 102, ui->currentSlider);
+    current.versionGatedSkip = true;
+    f.push_back(current);
+
+    EepromField sineMode = makeSliderField(45, "sineModeStrength", 1, 10, ui->sineModePowerSlider);
+    sineMode.versionGatedSkip = true;
+    {  // raw > 10 is invalid legacy data -> falls back to the default strength
+      QSlider *slider = ui->sineModePowerSlider;
+      sineMode.toUi = [slider](uint8_t v) { slider->setValue(v > 10 ? 5 : v); };
+    }
+    f.push_back(sineMode);
+
+    EepromField signalType = makeComboBoxField(46, "signalType", 0, 4, ui->signalComboBox);
+    signalType.versionGatedSkip = true;
+    f.push_back(signalType);
+  }
+
+  f.push_back(makeCheckboxField(47, "autoTiming", ui->AutoTimingButton));
+
+  return f;
+}
+
+// Applies a 48-byte EEPROM buffer (from a connected ESC or a loaded .bin) to
+// the UI controls. Mirrors the version-0 special-casing that used to be
+// duplicated between connectMotor() and loadConfig().
+void Widget::applyBufferToUi(const QByteArray &buffer) {
+  const uint8_t eepromVersion = (uint8_t)buffer.at(1);
+  for (const EepromField &field : eepromFieldTable()) {
+    if (field.versionGatedSkip && eepromVersion == 0) {
+      continue;
+    }
+    const uint8_t raw = (field.hasLegacyDefault && eepromVersion == 0)
+                            ? field.legacyDefault
+                            : (uint8_t)buffer.at(field.offset);
+    field.toUi(raw);
+  }
+}
+
+// Builds a 48-byte EEPROM buffer from `base` (typically eeprom_buffer) with
+// every UI-bound field overwritten by the current UI state. Used for both
+// flashing (on_writeEEPROM_clicked) and saving to disk (on_saveConfigButton_clicked).
+QByteArray Widget::buildBufferFromUi(const QByteArray &base) {
+  QByteArray out;
+  for (int i = 0; i < 48; i++) {
+    out.append(base.at(i));
+  }
+  for (const EepromField &field : eepromFieldTable()) {
+    out[field.offset] = (char)field.fromUi();
+  }
+  return out;
+}
 
 void Widget::on_sendButton_clicked() { connectSerial(); }
 
@@ -80,7 +326,6 @@ void Widget::showStatusMessage(const QString &message) {
 }
 
 void Widget::serialInfoStuff() {
-
   if (m_serial->isOpen()) {
     return;
   }
@@ -100,7 +345,7 @@ void Widget::serialInfoStuff() {
   QString s;
 
   for (const QSerialPortInfo &info :
-       infos) { // here we should add to drop down menu
+       infos) {  // here we should add to drop down menu
 
     ui->serialSelectorBox->addItem(info.portName());
     //  m_serial->setPortName(info.portName());
@@ -158,7 +403,7 @@ void Widget::connectSerial() {
                           .arg(m_serial->flowControl()));
 
     hide4wayButtons(false);
-    QByteArray passthroughenable2; // payload  empty here
+    QByteArray passthroughenable2;  // payload  empty here
     four_way->passthrough_started = true;
 
     four_way->ack_required = false;
@@ -192,7 +437,7 @@ void Widget::on_disconnectButton_clicked() {
     }
     send_mspCommand(
         0x44,
-        0x00); // reset the FC, otherwise it can hold the last throttle value;
+        0x00);  // reset the FC, otherwise it can hold the last throttle value;
     m_serial->waitForBytesWritten(500);
     while (m_serial->waitForReadyRead(500)) {
       QByteArray data = m_serial->readAll();
@@ -210,150 +455,144 @@ void Widget::on_disconnectButton_clicked() {
 
 void Widget::readInitData() {
   QByteArray data = m_serial->readAll();
-  if(data.size() != 0){
-  qInfo("read data size next");
-  if (data.size() > 21) {
-    data.remove(0, 21);
-  }
+  if (data.size() != 0) {
+    qInfo("read data size next");
+    if (data.size() > 21) {
+      data.remove(0, 21);
+    }
 
-  if (data[8] == (char)0x30) {
-    if (data[4] == (char)0x2b) {
-      qInfo("G071ESC_2KB_PAGE");
-      four_way->memory_divider_required_four = true;
-      four_way->eeprom_address =
-          0x7e00; // this equals an eeprom address of 0x1f800 126kb
+    if (data[8] == (char)0x30) {
+      if (data[4] == (char)0x2b) {
+        qInfo("G071ESC_2KB_PAGE");
+        four_way->memory_divider_required_four = true;
+        four_way->eeprom_address =
+            0x7e00;  // this equals an eeprom address of 0x1f800 126kb
+      }
+      if (data[4] == (char)0x1f) {
+        qInfo("F0ESC_1KB_PAGE");
+        four_way->memory_divider_required_four = false;
+        four_way->eeprom_address = 0x7c00;  //  eeprom address of 0x7c00 31kb
+      }
+      if (data[4] == (char)0x35) {
+        qInfo("F3ESC_2KB_PAGE");
+        four_way->memory_divider_required_four = false;
+        four_way->eeprom_address = 0xF800;  // eeprom address of 0xf800 62kb
+      }
+      ui->escStatusLabel->setText("Connected");
+      four_way->ESC_connected = true;
+      hideESCSettings(false);
+    } else {
+      hideESCSettings(true);
+      four_way->ESC_connected = false;
     }
-    if (data[4] == (char)0x1f) {
-      qInfo("F0ESC_1KB_PAGE");
-      four_way->memory_divider_required_four = false;
-      four_way->eeprom_address = 0x7c00; //  eeprom address of 0x7c00 31kb
-    }
-    if (data[4] == (char)0x35) {
-      qInfo("F3ESC_2KB_PAGE");
-      four_way->memory_divider_required_four = false;
-      four_way->eeprom_address = 0xF800; // eeprom address of 0xf800 62kb
-    }
-    ui->escStatusLabel->setText("Connected");
-    four_way->ESC_connected = true;
-    hideESCSettings(false);
-  } else {
-    hideESCSettings(true);
-    four_way->ESC_connected = false;
   }
-}
 }
 void Widget::readData() {
-qInfo("reading");
+  qInfo("reading");
   QByteArray data = m_serial->readAll();
 
-if(data.size() != 0){
-  if (four_way->passthrough_started) {
-    qInfo("passthrough started");
-  }
+  if (data.size() != 0) {
+    if (four_way->passthrough_started) {
+      qInfo("passthrough started");
+    }
 
-  if (!four_way->passthrough_started) {
-    qInfo("no-passthrough started");
-  }
+    if (!four_way->passthrough_started) {
+      qInfo("no-passthrough started");
+    }
 
-  //   qInfo("size of data : %d ", data.size());
-  //   QByteArray data_hex_string = data.toHex();
-  if (four_way->passthrough_started) {
+    //   qInfo("size of data : %d ", data.size());
+    //   QByteArray data_hex_string = data.toHex();
+    if (four_way->passthrough_started) {
+      if (four_way->ack_required == true) {
+        if (data.size() < 3) {
+          ui->StatusLabel->setText("No Response From ESC");
+          return;
+        }
+        if (four_way->checkCRC(data, data.size())) {
+          if (data[data.size() - 3] == (char)0x00) {  // ACK OK!!
+            four_way->ack_required = false;
+            four_way->ack_type = ACK_OK;
 
-    if (four_way->ack_required == true) {
+            qInfo("line 271");
 
-      if (data.size() < 3) {
-        ui->StatusLabel->setText("No Response From ESC");
-        return;
-      }
-      if (four_way->checkCRC(data, data.size())) {
+            ui->StatusLabel->setText("GOOD ACK FROM IF");
+            if (data[1] == (char)0x3a) {
+              //  if verifying flash
 
-        if (data[data.size() - 3] == (char)0x00) { // ACK OK!!
-          four_way->ack_required = false;
-          four_way->ack_type = ACK_OK;
-
-           qInfo("line 271");
-
-
-          ui->StatusLabel->setText("GOOD ACK FROM IF");
-          if (data[1] == (char)0x3a) {
-            //  if verifying flash
-
-            input_buffer->clear();
-            for (int i = 0; i < (uint8_t)data[4]; i++) {
-              input_buffer->append(
-                  data[i + 5]); // first 4 byte are package header
+              input_buffer->clear();
+              for (int i = 0; i < (uint8_t)data[4]; i++) {
+                input_buffer->append(
+                    data[i + 5]);  // first 4 byte are package header
+              }
+              qInfo("GOOD ACK FROM ESC -- read");
+              hideESCSettings(false);
+              hideEEPROMSettings(false);
+              //     QApplication::processEvents();
             }
-            qInfo("GOOD ACK FROM ESC -- read");
-            hideESCSettings(false);
-            hideEEPROMSettings(false);
-            //     QApplication::processEvents();
-          }
-          if (data[1] == (char)0x3b) {
+            if (data[1] == (char)0x3b) {
+              qInfo("GOOD ACK FROM ESC -- WRITE");
+            }
 
-            qInfo("GOOD ACK FROM ESC -- WRITE");
-          }
-
-          if (data[1] == (char)0x37) {
-            hideESCSettings(false);
-            // qInfo("ID 6: %d",data[6]);
-            if (data[6] == (char)0x2b) {
-              qInfo("G071ESC_2KB_PAGE");
-              four_way->memory_divider_required_four = true;
-              four_way->eeprom_address =
-                  0x7e00; // this equals an eeprom address of 0x1f800 126kb
-              four_way->firmware_start = 4096;
-            }
-            if (data[6] == (char)0x1f) {
-              qInfo("F0531ESC_1KB_PAGE");
-              four_way->memory_divider_required_four = false;
-              four_way->eeprom_address =
-                  0x7c00; //  eeprom address of 0x7c00 31kb
-              four_way->firmware_start = 4096;
-            }
-            if (data[6] == (char)0x35) {
-              qInfo("F3ESC_2KB_PAGE");
-              four_way->memory_divider_required_four = false;
-              four_way->eeprom_address =
-                  0xF800; // eeprom address of 0x7c00 62kb
-              four_way->firmware_start = 4096;
-            }
-            if (data[6] == (char)0x15) {
+            if (data[1] == (char)0x37) {
+              hideESCSettings(false);
+              // qInfo("ID 6: %d",data[6]);
+              if (data[6] == (char)0x2b) {
+                qInfo("G071ESC_2KB_PAGE");
+                four_way->memory_divider_required_four = true;
+                four_way->eeprom_address =
+                    0x7e00;  // this equals an eeprom address of 0x1f800 126kb
+                four_way->firmware_start = 4096;
+              }
+              if (data[6] == (char)0x1f) {
+                qInfo("F0531ESC_1KB_PAGE");
+                four_way->memory_divider_required_four = false;
+                four_way->eeprom_address =
+                    0x7c00;  //  eeprom address of 0x7c00 31kb
+                four_way->firmware_start = 4096;
+              }
+              if (data[6] == (char)0x35) {
+                qInfo("F3ESC_2KB_PAGE");
+                four_way->memory_divider_required_four = false;
+                four_way->eeprom_address =
+                    0xF800;  // eeprom address of 0x7c00 62kb
+                four_way->firmware_start = 4096;
+              }
+              if (data[6] == (char)0x15) {
                 qInfo("NXP ESC_8KB_PAGE");
                 four_way->memory_divider_required_four = false;
                 four_way->eeprom_address =
-                    0xE000; // eeprom address of 64k-8k
+                    0xE000;  // eeprom address of 64k-8k
                 four_way->firmware_start = 16384;
+              }
+              ui->escStatusLabel->setText("Connected");
+              four_way->ESC_connected = true;
             }
-            ui->escStatusLabel->setText("Connected");
-            four_way->ESC_connected = true;
-          }
-        } else { // bad ack
-          qInfo("line 319");
-          if (data[1] == (char)0x37) {
-            hideESCSettings(true);
-            four_way->ESC_connected = false;
-          }
-          if (data[1] == (char)0x3b) {
+          } else {  // bad ack
+            qInfo("line 319");
+            if (data[1] == (char)0x37) {
+              hideESCSettings(true);
+              four_way->ESC_connected = false;
+            }
+            if (data[1] == (char)0x3b) {
+              qInfo("BAD ACK FROM ESC -- WRITE");
+            }
+            // hideEEPROMSettings(true);
 
-            qInfo("BAD ACK FROM ESC -- WRITE");
+            qInfo("BAD OR NO ACK FROM ESC");
+            ui->StatusLabel->setText("BAD OR NO ACK FROM IF");
+            four_way->ack_type = BAD_ACK;
+            // four_way->ack_required = false;
           }
-         // hideEEPROMSettings(true);
-
-          qInfo("BAD OR NO ACK FROM ESC");
-          ui->StatusLabel->setText("BAD OR NO ACK FROM IF");
-          four_way->ack_type = BAD_ACK;
-          // four_way->ack_required = false;
+        } else {
+          qInfo("4WAY CRC ERROR");
+          ui->StatusLabel->setText("BAD OR NO ACK FROM ESC");
+          four_way->ack_type = CRC_ERROR;
         }
       } else {
-        qInfo("4WAY CRC ERROR");
-        ui->StatusLabel->setText("BAD OR NO ACK FROM ESC");
-        four_way->ack_type = CRC_ERROR;
+        qInfo("no ack required");
       }
-    } else {
-      qInfo("no ack required");
     }
   }
-}
 
   if (parseMSPMessage) {
     parseMSPMessage = false;
@@ -403,7 +642,6 @@ uint8_t Widget::mspSerialChecksumBuf(uint8_t checksum, const uint8_t *data,
 }
 
 void Widget::on_pushButton_clicked() {
-
   four_way->ack_required = true;
   writeData(four_way->makeFourWayCommand(0x3f, 0x04));
 }
@@ -415,14 +653,13 @@ void Widget::on_pushButton_2_clicked() {
 
 void Widget::on_passthoughButton_clicked() {
   hide4wayButtons(false);
-  QByteArray passthroughenable2; // payload  empty here
+  QByteArray passthroughenable2;  // payload  empty here
   four_way->passthrough_started = true;
   parseMSPMessage = false;
   send_mspCommand(0xf5, passthroughenable2);
 }
 
 void Widget::on_horizontalSlider_sliderMoved(int position) {
-
   char highByteThrottle = (position >> 8) & 0xff;
   ;
   char lowByteThrottle = position & 0xff;
@@ -431,9 +668,9 @@ void Widget::on_horizontalSlider_sliderMoved(int position) {
   ui->lineEdit->setText(s);
   //    24 4d 3c 10 d6 d0 07 d0 07 d0 07 d0 07 00 00 00 00 00 00 00 00 c6
   QByteArray sliderThrottle;
-  sliderThrottle.append((char)lowByteThrottle);  // motor 1
-  sliderThrottle.append((char)highByteThrottle); //
-  sliderThrottle.append((char)lowByteThrottle);  // motor 2
+  sliderThrottle.append((char)lowByteThrottle);   // motor 1
+  sliderThrottle.append((char)highByteThrottle);  //
+  sliderThrottle.append((char)lowByteThrottle);   // motor 2
   sliderThrottle.append((char)highByteThrottle);
   sliderThrottle.append((char)lowByteThrottle);
   sliderThrottle.append((char)highByteThrottle);
@@ -449,7 +686,6 @@ void Widget::on_horizontalSlider_sliderMoved(int position) {
   sliderThrottle.append((char)0x00);
 
   if (ui->checkBox->isChecked()) {
-
     send_mspCommand(0xd6, sliderThrottle);
     m_serial->waitForBytesWritten(200);
   }
@@ -490,7 +726,6 @@ QByteArray Widget::convertFromHex() {
       uint16_t crc = 0;
 
       for (int i = 1; i < line.size(); i = i + 2) {
-
         QString word = line.at(i);
         word.append(line.at(i + 1));
         uint16_t num = word.toLongLong(nullptr, 16);
@@ -511,7 +746,7 @@ QByteArray Widget::convertFromHex() {
       // 3 data type
       uint16_t data_type = (char)lineArray.at(3);
 
-      if (data_type == (char)0x00) { // data
+      if (data_type == (char)0x00) {  // data
 
         uint16_t address = (((uint8_t)lineArray.at(1) << 8) & 0xffff) |
                            ((uint8_t)lineArray.at(2) & 0xff);
@@ -535,9 +770,8 @@ QByteArray Widget::convertFromHex() {
     }
     inputHex.close();
   }
-//QFileDialog::saveFileContent(rawData, "raw.bin");
+  // QFileDialog::saveFileContent(rawData, "raw.bin");
   return rawData;
-
 }
 
 void Widget::resetESC() {
@@ -564,37 +798,36 @@ void Widget::on_writeBinary_clicked() {
   }
 
   four_way->ack_required = true;
-  if(eeprom_buffer->size() != 0){
-  QByteArray eeprom_out;
-  for (int i = 0; i < 48; i++) {
-    eeprom_out.append(eeprom_buffer->at(i));
-  }
-  eeprom_out[0] = 0x00;
-
-  if (four_way->direct) {
-
-    sendDirect(eeprom_out, 48, four_way->eeprom_address);
-    chunk_size = 128;
-  } else {
-    writeData(four_way->makeFourWayWriteCommand(eeprom_out, 48,
-                                                four_way->eeprom_address));
-    chunk_size = 256;
-    m_serial->waitForBytesWritten(500);
-    while (m_serial->waitForReadyRead(1000)) {
+  if (eeprom_buffer->size() != 0) {
+    QByteArray eeprom_out;
+    for (int i = 0; i < 48; i++) {
+      eeprom_out.append(eeprom_buffer->at(i));
     }
+    eeprom_out[0] = 0x00;
 
-    readData();
+    if (four_way->direct) {
+      sendDirect(eeprom_out, 48, four_way->eeprom_address);
+      chunk_size = 128;
+    } else {
+      writeData(four_way->makeFourWayWriteCommand(eeprom_out, 48,
+                                                  four_way->eeprom_address));
+      chunk_size = 256;
+      m_serial->waitForBytesWritten(500);
+      while (m_serial->waitForReadyRead(1000)) {
+      }
+
+      readData();
+    }
+    if (four_way->ack_required == false) {  // good ack received from esc
+      ui->escStatusLabel->setText("WRITE EEPROM SUCCESSFUL");
+    } else {
+      ui->escStatusLabel->setText("Unable to set safety bit");
+      return;
+    }
   }
-  if (four_way->ack_required == false) { // good ack received from esc
-    ui->escStatusLabel->setText("WRITE EEPROM SUCCESSFUL");
-  } else {
-    ui->escStatusLabel->setText("Unable to set safety bit");
-    return;
-  }
-}
   QFileInfo fileInfo(filename);
   QByteArray line;
-  QString ext = fileInfo.suffix(); // ext = "tar.gz"
+  QString ext = fileInfo.suffix();  // ext = "tar.gz"
 
   if (ext == "hex") {
     qInfo("hex");
@@ -608,7 +841,6 @@ void Widget::on_writeBinary_clicked() {
     //       qInfo("size of original: %d", line.size());
     inputFile.close();
   } else {
-
     ui->StatusLabel->setText("NOT A VALID FILE");
     ui->escStatusLabel->setText("Select a .bin or .hex file");
     return;
@@ -623,12 +855,12 @@ void Widget::on_writeBinary_clicked() {
   uint8_t retries = 0;
 
   for (int i = 0; i <= pages;
-       i++) { // for each page ( including partial page at end)
+       i++) {  // for each page ( including partial page at end)
 
-    for (int j = 0; j < 2048 / chunk_size; j++) { // 8 or 16 buffers per page
+    for (int j = 0; j < 2048 / chunk_size; j++) {  // 8 or 16 buffers per page
       QByteArray onetwentyeight;
       // for debugging limit to 50
-      for (int k = 0; k < chunk_size; k++) { // transfer 256 bytes each buffer
+      for (int k = 0; k < chunk_size; k++) {  // transfer 256 bytes each buffer
         onetwentyeight.append(line.at(k + (i * 2048) + (j * chunk_size)));
         index++;
         if (index >= sizeofBin) {
@@ -658,30 +890,28 @@ void Widget::on_writeBinary_clicked() {
             writeData(four_way->makeFourWayWriteCommand(
                 onetwentyeight, onetwentyeight.size(),
                 four_way->firmware_start + (i * 2048) +
-                    (j * chunk_size))); // increment address every i and j
+                    (j * chunk_size)));  // increment address every i and j
           }
         }
 
         if (!four_way->direct) {
-          while(m_serial->waitForBytesWritten(200)){
-
+          while (m_serial->waitForBytesWritten(200)) {
           }
-       //   m_serial->waitForBytesWritten(200);
+          //   m_serial->waitForBytesWritten(200);
           while (m_serial->waitForReadyRead(200)) {
           }
           readData();
         }
 
         retries++;
-        if (retries > max_retries) { // after 8 tries to get an ack
+        if (retries > max_retries) {  // after 8 tries to get an ack
 
           break;
         }
       }
       if (four_way->ack_type == BAD_ACK) {
-
         ui->escStatusLabel_2->setText("FLASH FAILURE");
-        return; //
+        return;  //
       }
       if (four_way->ack_type == CRC_ERROR) {
         ui->escStatusLabel_2->setText("FLASH FAILURE");
@@ -700,49 +930,45 @@ void Widget::on_writeBinary_clicked() {
         four_way->ack_required = true;
 
         QByteArray another_eeprom_out;
-        if(eeprom_buffer->size() != 0) {
-        for (int i = 0; i < 48; i++) {
-          another_eeprom_out.append(eeprom_buffer->at(i));
-        }
-        another_eeprom_out[00] = 0x01;
-        if ((eeprom_buffer->at(1) < (char)0x03) || (eeprom_buffer->at(2) == char(0x00))) { // no eeprom ever sent, will be set to zero at
-                            // beggining of flash.
-            sendFirstEeprom(0);
-          resetESC();
-          return;
-        } else {
-
-          if (four_way->direct) {
-
-            sendDirect(another_eeprom_out, 48, four_way->eeprom_address);
-
-          } else {
-
-            writeData(four_way->makeFourWayWriteCommand(
-                another_eeprom_out, 48, four_way->eeprom_address));
-
-            m_serial->waitForBytesWritten(1000);
-            while (m_serial->waitForReadyRead(1000)) {
-            }
-          //  QByteArray data = m_serial->readAll();
-          //  four_way->ack_required = false;
-            readData();
+        if (eeprom_buffer->size() != 0) {
+          for (int i = 0; i < 48; i++) {
+            another_eeprom_out.append(eeprom_buffer->at(i));
           }
-        }
+          another_eeprom_out[00] = 0x01;
+          if ((eeprom_buffer->at(1) < (char)0x03) || (eeprom_buffer->at(2) == char(0x00))) {  // no eeprom ever sent, will be set to zero at
+                                                                                              // beggining of flash.
+            sendFirstEeprom(0);
+            resetESC();
+            return;
+          } else {
+            if (four_way->direct) {
+              sendDirect(another_eeprom_out, 48, four_way->eeprom_address);
 
-        if (four_way->ack_required == false) { // good ack received from esc
-          ui->escStatusLabel->setText("WRITE EEPROM SUCCESSFUL");
-          writeMusic();
-          return;
-        } else {
-          ui->escStatusLabel->setText("Unable to set safety bit");
-          return;
-        }
-    //    resetESC();
-        break;
-        }
-        }
+            } else {
+              writeData(four_way->makeFourWayWriteCommand(
+                  another_eeprom_out, 48, four_way->eeprom_address));
 
+              m_serial->waitForBytesWritten(1000);
+              while (m_serial->waitForReadyRead(1000)) {
+              }
+              //  QByteArray data = m_serial->readAll();
+              //  four_way->ack_required = false;
+              readData();
+            }
+          }
+
+          if (four_way->ack_required == false) {  // good ack received from esc
+            ui->escStatusLabel->setText("WRITE EEPROM SUCCESSFUL");
+            writeMusic();
+            return;
+          } else {
+            ui->escStatusLabel->setText("Unable to set safety bit");
+            return;
+          }
+          //    resetESC();
+          break;
+        }
+      }
     }
   }
   qInfo("what is going on? size :  %d ", sizeofBin);
@@ -784,9 +1010,7 @@ bool Widget::getMusic() {
       music_buffer->append(music[i]);
     }
   } else {
-
     while (four_way->ack_required) {
-
       writeData(
           four_way->makeFourWayReadCommand(128, four_way->eeprom_address + 48));
       m_serial->waitForBytesWritten(500);
@@ -817,7 +1041,6 @@ bool Widget::writeMusic() {
       sendDirect(musicBufferOut, 128, four_way->eeprom_address + 48);
 
     } else {
-
       writeData(four_way->makeFourWayWriteCommand(
           musicBufferOut, 128, four_way->eeprom_address + 48));
 
@@ -827,7 +1050,7 @@ bool Widget::writeMusic() {
 
       readData();
     }
-    if (four_way->ack_required == false) { // good ack received from esc
+    if (four_way->ack_required == false) {  // good ack received from esc
       ui->escStatusLabel->setText("WRITE EEPROM + SUCCESSFUL");
 
       return true;
@@ -867,7 +1090,7 @@ void Widget::on_VerifyFlash_clicked() {
       }
       readData();
       retries++;
-      if (retries > max_retries) { // after 8 tries to get an ack
+      if (retries > max_retries) {  // after 8 tries to get an ack
         return;
       }
     }
@@ -891,22 +1114,21 @@ void Widget::on_VerifyFlash_clicked() {
   }
 }
 
-void Widget::endTimer(){
+void Widget::endTimer() {
   timerdone = true;
-    if (connectMotor(four_way->connected_motor)) {
-      ui->escStatusLabel->setText("M1:Connected: Settings read OK ");
-      return;
-    } else {
-      ui->escStatusLabel->setText("M1:Did not connect - retrying ");
-      ui->StatusLabel->setText("Connecting");
-    }
-    if (connectMotor(four_way->connected_motor)) {
-      ui->escStatusLabel->setText("M1:Connected: Settings read OK ");
-    } else {
-      ui->escStatusLabel->setText("M1:Did not connect");
-    }
+  if (connectMotor(four_way->connected_motor)) {
+    ui->escStatusLabel->setText("M1:Connected: Settings read OK ");
+    return;
+  } else {
+    ui->escStatusLabel->setText("M1:Did not connect - retrying ");
+    ui->StatusLabel->setText("Connecting");
+  }
+  if (connectMotor(four_way->connected_motor)) {
+    ui->escStatusLabel->setText("M1:Connected: Settings read OK ");
+  } else {
+    ui->escStatusLabel->setText("M1:Did not connect");
+  }
 }
-
 
 bool Widget::connectMotor(uint8_t motor) {
   uint16_t buffer_length = 48;
@@ -915,12 +1137,11 @@ bool Widget::connectMotor(uint8_t motor) {
   ui->escStatusLabel_2->setText("Connecting to ESC...");
   QApplication::processEvents();
 
-
   four_way->ack_required = true;
   retries = 0;
   //   while(four_way->ack_required){
   if (four_way->direct) {
-    uint8_t init[21] = {0, 0,    0,   0,   0,   0,   0,   0,   0,    0,   0,
+    uint8_t init[21] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
                         0, 0x0D, 'B', 'L', 'H', 'e', 'l', 'i', 0xF4, 0x7D};
     QByteArray BootInit;
     for (int i = 0; i < 21; i++) {
@@ -957,21 +1178,21 @@ bool Widget::connectMotor(uint8_t motor) {
     QByteArray flash = m_serial->readAll();
 
     qInfo("size of flash 1 : %d ", flash.size());
-    if(flash.size() == 87){
-    flash.remove(0, 4);
+    if (flash.size() == 87) {
+      flash.remove(0, 4);
     }
-     qInfo("size of flash 2: %d ", flash.size());
+    qInfo("size of flash 2: %d ", flash.size());
     if (flash[flash.size() - 1] == char(0x30)) {
       qInfo("good ack read !!!!");
     } else {
       return false;
     }
-    if (RL->checkCRC(flash, flash.size() - 1)) { // last byte ack 0x30
+    if (RL->checkCRC(flash, flash.size() - 1)) {  // last byte ack 0x30
       qInfo("GOOD crc FROM ESC -- read");
       hideESCSettings(false);
       hideEEPROMSettings(false);
       ui->sendFirstEEPROM->setHidden(false);
-      //ui->crawler_default_button->setHidden(false);
+      // ui->crawler_default_button->setHidden(false);
       input_buffer->clear();
       for (int i = 0; i < flash.size() - 2; i++) {
         input_buffer->append(flash[i]);
@@ -995,7 +1216,6 @@ bool Widget::connectMotor(uint8_t motor) {
 
     four_way->ack_required = true;
     while (four_way->ack_required) {
-
       writeData(four_way->makeFourWayReadCommand(buffer_length + 32,
                                                  four_way->eeprom_address - 32));
       m_serial->waitForBytesWritten(300);
@@ -1010,41 +1230,41 @@ bool Widget::connectMotor(uint8_t motor) {
     }
   }
 
-  QString name; // 2 bytes
-      name.append(QChar(input_buffer->at(0)));
-      name.append(QChar(input_buffer->at(1)));
-      name.append(QChar(input_buffer->at(2)));
-      name.append(QChar(input_buffer->at(3)));
-      name.append(QChar(input_buffer->at(4)));
-      name.append(QChar(input_buffer->at(5)));
-      name.append(QChar(input_buffer->at(6)));
-      name.append(QChar(input_buffer->at(7)));
-      name.append(QChar(input_buffer->at(8)));
-      name.append(QChar(input_buffer->at(9)));
-      name.append(QChar(input_buffer->at(10)));
-      name.append(QChar(input_buffer->at(11)));
-      name.append(QChar(input_buffer->at(12)));
-      name.append(QChar(input_buffer->at(13)));
-      name.append(QChar(input_buffer->at(14)));
+  QString name;  // 2 bytes
+  name.append(QChar(input_buffer->at(0)));
+  name.append(QChar(input_buffer->at(1)));
+  name.append(QChar(input_buffer->at(2)));
+  name.append(QChar(input_buffer->at(3)));
+  name.append(QChar(input_buffer->at(4)));
+  name.append(QChar(input_buffer->at(5)));
+  name.append(QChar(input_buffer->at(6)));
+  name.append(QChar(input_buffer->at(7)));
+  name.append(QChar(input_buffer->at(8)));
+  name.append(QChar(input_buffer->at(9)));
+  name.append(QChar(input_buffer->at(10)));
+  name.append(QChar(input_buffer->at(11)));
+  name.append(QChar(input_buffer->at(12)));
+  name.append(QChar(input_buffer->at(13)));
+  name.append(QChar(input_buffer->at(14)));
   ui->FirmwareNameLabel->setText(name);
 
-input_buffer->remove(0, 32);
-qInfo("inputBUFFERAT0 : %d ", input_buffer->at(0));
+  input_buffer->remove(0, 32);
+  qInfo("inputBUFFERAT0 : %d ", input_buffer->at(0));
 
-//return false;
-if ((input_buffer->at(0) == (char)0xFF)) {
-    QMessageBox::warning( // no settings area found
+  // return false;
+  if ((input_buffer->at(0) == (char)0xFF)) {
+    QMessageBox::warning(  // no settings area found
         this, tr("Application Name"),
         tr("Boot bit set to 0xFF"));
     return 0;
-}
-if ((input_buffer->at(0) == (char)0x01)) {
+  }
+  if ((input_buffer->at(0) == (char)0x01)) {
     if ((input_buffer->at(1) == (char)0xFF) ||
         (input_buffer->at(2) ==
-         (char)0x00)) { // if eeprom version is 0xff it means boot bit is set
-                        // but no defaults have been sent
-      QMessageBox::warning( // also if bootloader version is 00 it means it has
-                            // been written
+         (char)0x00)) {      // if eeprom version is 0xff it means boot bit is set
+                             // but no defaults have been sent
+      QMessageBox::warning(  // also if bootloader version is 00 it means it has
+                             // been written
           this, tr("Application Name"),
           tr("No settings found use 'Send default EEPROM' under FLASH tab"));
       ui->eepromFrame->setHidden(true);
@@ -1055,13 +1275,13 @@ if ((input_buffer->at(0) == (char)0x01)) {
       return false;
     }
     if ((input_buffer->at(1) <
-         (char)0x03)) { // if eeprom version is 0xff it means boot bit is set
-                        // but no defaults have been sent
-      QMessageBox::warning( // also if bootloader version is 00 it means it has
-                            // been written
+         (char)0x03)) {      // if eeprom version is 0xff it means boot bit is set
+                             // but no defaults have been sent
+      QMessageBox::warning(  // also if bootloader version is 00 it means it has
+                             // been written
           this, tr("Application Name"),
           tr("Outdated firmware detected 'This config tool is for 2.19 or higher"));
-   //   ui->sendFirstEEPROM->setHidden(true);
+      //   ui->sendFirstEEPROM->setHidden(true);
       ui->crawler_default_button->setHidden(true);
       ui->eepromFrame->setHidden(true);
       ui->inputservoFrame->setHidden(true);
@@ -1071,144 +1291,7 @@ if ((input_buffer->at(0) == (char)0x01)) {
       return false;
     }
 
-
-    ui->maxRocSlider->setValue((uint8_t)(input_buffer->at(5)));
-    ui->minDutySlider->setValue((uint8_t)(input_buffer->at(6)));
-    if(input_buffer->at(7) == 0x01){
-      ui->disableStickCalibCheckbox->setChecked(true);
-    }else{
-      ui->disableStickCalibCheckbox->setChecked(false);
-    }
-    ui->absoluteVoltageSlider->setValue((uint8_t)(input_buffer->at(8)));
-    ui->currentLimitPedit->setText(QString::number((uint8_t)(input_buffer->at(9))*2));
-    ui->currentLimitIedit->setText(QString::number((uint8_t)(input_buffer->at(10))));
-    ui->currentLimitDedit->setText(QString::number((uint8_t)(input_buffer->at(11))*2));
-    ui->activeBrakeSlider->setValue((uint8_t)(input_buffer->at(12)));
-
-
-
-                if(input_buffer->at(17) == 0x01){
-                ui->rvCheckBox->setChecked(true);
-            }else{
-               ui->rvCheckBox->setChecked(false);
-            }
-
-
-    if (input_buffer->at(18) == 0x01) {
-      ui->biDirectionCheckbox->setChecked(true);
-    } else {
-      ui->biDirectionCheckbox->setChecked(false);
-    }
-    if (input_buffer->at(19) == 0x01) {
-      ui->sinCheckBox->setChecked(true);
-    } else {
-      ui->sinCheckBox->setChecked(false);
-    }
-    if (input_buffer->at(20) == 0x01) {
-      ui->comp_pwmCheckbox->setChecked(true);
-    } else {
-      ui->comp_pwmCheckbox->setChecked(false);
-    }
-    if (input_buffer->at(21) == 0x01) {
-      ui->varPWMCheckBox->setChecked(true);
-    } else {
-      ui->varPWMCheckBox->setChecked(false);
-    }
-    if (input_buffer->at(21) == 0x02) {
-      ui->autoPWM->setChecked(true);
-    } else {
-      ui->autoPWM->setChecked(false);
-    }
-
-    if (input_buffer->at(22) == 0x01) {
-      ui->stuckProtectionBox->setChecked(true);
-    } else {
-      ui->stuckProtectionBox->setChecked(false);
-    }
-    ui->timingAdvanceLCD->display(((input_buffer->at(23))-10)*0.9375);
-    ui->timingAdvanceSlider->setValue(input_buffer->at(23));
-    ui->pwmFreqSlider->setValue((uint8_t)input_buffer->at(24));
-    ui->startupPowerSlider->setValue((uint8_t)input_buffer->at(25));
-    ui->motorKVSlider->setValue((uint8_t)input_buffer->at(26));
-    ui->motorPolesSlider->setValue(input_buffer->at(27));
-
-    if (input_buffer->at(28) == 0x01) {
-      ui->brakecheckbox->setChecked(true);
-    } else {
-      ui->brakecheckbox->setChecked(false);
-    }
-
-    if (input_buffer->at(28) == 0x02) {
-      ui->activeBrakeCheckbox->setChecked(true);
-    } else {
-      ui->activeBrakeCheckbox->setChecked(false);
-    }
-
-    if (input_buffer->at(29) == 0x01) {
-      ui->antiStallBox->setChecked(true);
-    } else {
-      ui->antiStallBox->setChecked(false);
-    }
-    if (input_buffer->at(1) == 0) { // if ESC is curently on eeprom version 0
-      ui->beepVolumeSlider->setValue(5);
-      ui->servoLowSlider->setValue(128);
-      ui->servoHighSlider->setValue(128);
-      ui->servoNeutralSlider->setValue(128);
-      ui->servoDeadBandSlider->setValue(50);
-      ui->thirtymsTelemBox->setChecked(false);
-    } else {
-
-      ui->beepVolumeSlider->setValue(input_buffer->at(30));
-      if (input_buffer->at(31) == 0x01) {
-        ui->thirtymsTelemBox->setChecked(true);
-      } else {
-        ui->thirtymsTelemBox->setChecked(false);
-      }
-      ui->servoLowSlider->setValue((uint8_t)(input_buffer->at(32)));
-      ui->servoHighSlider->setValue((uint8_t)(input_buffer->at(33)));
-      ui->servoNeutralSlider->setValue((uint8_t)(input_buffer->at(34)));
-      ui->servoDeadBandSlider->setValue((uint8_t)(input_buffer->at(35)));
-
-      if (input_buffer->at(36) == 0x01) {
-        ui->lowVoltageCuttoffBox->setChecked(true);
-      } else {
-        ui->lowVoltageCuttoffBox->setChecked(false);
-      }
-      ui->lowVoltageThresholdSlider->setValue((uint8_t)(input_buffer->at(37)));
-      if (input_buffer->at(38) == 0x01) {
-        ui->rcCarReverse->setChecked(true);
-      } else {
-        ui->rcCarReverse->setChecked(false);
-      }
-      if (input_buffer->at(39) == 0x01) {
-        ui->hallSensorCheckbox->setChecked(true);
-      } else {
-        ui->hallSensorCheckbox->setChecked(false);
-      }
-      ui->sineStartupSlider->setValue((uint8_t)(input_buffer->at(40)));
-      ui->dragBrakeSlider->setValue((uint8_t)(input_buffer->at(41)));
-
-      ui->runningBrakeStrength->setValue((uint8_t)(input_buffer->at(42)));
-      if ((uint8_t)(input_buffer->at(45)) > 10) {
-        ui->sineModePowerSlider->setValue(5);
-      } else {
-        ui->sineModePowerSlider->setValue((uint8_t)(input_buffer->at(45)));
-      }
-
-      if ((uint8_t)(input_buffer->at(43)) < 70) {
-        ui->temperatureSlider->setValue(142);
-      } else {
-        ui->temperatureSlider->setValue((uint8_t)(input_buffer->at(43)));
-      }
-      ui->currentSlider->setValue((uint8_t)(input_buffer->at(44)));
-      ui->signalComboBox->setCurrentIndex((uint8_t)(input_buffer->at(46)));
-    }
-    if (input_buffer->at(47) == 0x01) {
-      ui->AutoTimingButton->setChecked(true);
-    } else {
-      ui->AutoTimingButton->setChecked(false);
-    }
-
+    applyBufferToUi(*input_buffer);
 
     QString version = "FW Rev:";
     QString major = QString::number((uint8_t)input_buffer->at(3));
@@ -1220,7 +1303,6 @@ if ((input_buffer->at(0) == (char)0x01)) {
 
     QChar charas = input_buffer->at(18);
     int output = charas.toLatin1();
-
 
     qInfo(" output integer %i", output);
     eeprom_buffer->clear();
@@ -1235,13 +1317,13 @@ if ((input_buffer->at(0) == (char)0x01)) {
     return true;
 
   } else {
-    QMessageBox::warning( // no settings area found
+    QMessageBox::warning(  // no settings area found
         this, tr("Application Name"),
         tr("No Firmware found 'Please flash latest AM32 firmware"));
 
     ui->eepromFrame->setHidden(true);
     ui->inputservoFrame->setHidden(true);
-    //ui->sendFirstEEPROM->setHidden(true);
+    // ui->sendFirstEEPROM->setHidden(true);
     ui->crawler_default_button->setHidden(true);
     ui->flashFourwayFrame->setHidden(false);
     ui->biDirectionCheckbox->setChecked(false);
@@ -1275,7 +1357,6 @@ void Widget::allup() {
 }
 
 void Widget::showSingleMotor(bool tf) {
-
   ui->initMotor2->setHidden(tf);
   ui->initMotor3->setHidden(tf);
   ui->initMotor4->setHidden(tf);
@@ -1301,12 +1382,11 @@ void Widget::on_initMotor1_clicked() {
     ui->initMotor1_3->setFlat(true);
   }
   ui->MotorLabel->setText("M1:");
- // timerdone = false;
- // QTimer::singleShot(1200, this, &Widget::endTimer);
- // four_way->connected_motor = 0x00;
+  // timerdone = false;
+  // QTimer::singleShot(1200, this, &Widget::endTimer);
+  // four_way->connected_motor = 0x00;
 
-
-    if (connectMotor(0x00)) {
+  if (connectMotor(0x00)) {
     ui->escStatusLabel->setText("M1:Connected: Settings read OK ");
     four_way->connected_motor = 0x00;
     return;
@@ -1320,11 +1400,11 @@ void Widget::on_initMotor1_clicked() {
   } else {
     ui->escStatusLabel->setText("M1:Did not connect");
   }
-//  four_way->ack_required = true;
-//  writeData(four_way->makeFourWayCommand(0x37, 0x00));
-//  m_serial->waitForBytesWritten(200);
-//  while (m_serial->waitForReadyRead(100)) {
-//  }
+  //  four_way->ack_required = true;
+  //  writeData(four_way->makeFourWayCommand(0x37, 0x00));
+  //  m_serial->waitForBytesWritten(200);
+  //  while (m_serial->waitForReadyRead(100)) {
+  //  }
 }
 
 void Widget::on_initMotor2_clicked() {
@@ -1347,14 +1427,14 @@ void Widget::on_initMotor2_clicked() {
   } else {
     ui->escStatusLabel->setText("M2:Did not connect");
   }
-//  timerdone = false;
-//  QTimer::singleShot(1200, this, &Widget::endTimer);
-//  four_way->connected_motor = 0x01;
-//  four_way->ack_required = true;
-//  writeData(four_way->makeFourWayCommand(0x37, 0x01));
-//  m_serial->waitForBytesWritten(200);
-//  while (m_serial->waitForReadyRead(100)) {
-//  }
+  //  timerdone = false;
+  //  QTimer::singleShot(1200, this, &Widget::endTimer);
+  //  four_way->connected_motor = 0x01;
+  //  four_way->ack_required = true;
+  //  writeData(four_way->makeFourWayCommand(0x37, 0x01));
+  //  m_serial->waitForBytesWritten(200);
+  //  while (m_serial->waitForReadyRead(100)) {
+  //  }
 }
 
 void Widget::on_initMotor3_clicked() {
@@ -1378,14 +1458,14 @@ void Widget::on_initMotor3_clicked() {
   } else {
     ui->escStatusLabel->setText("M3:Did not connect");
   }
-//  timerdone = false;
-//  QTimer::singleShot(1200, this, &Widget::endTimer);
-//  four_way->connected_motor = 0x02;
-//  four_way->ack_required = true;
-//  writeData(four_way->makeFourWayCommand(0x37, 0x02));
-//  m_serial->waitForBytesWritten(200);
-//  while (m_serial->waitForReadyRead(100)) {
-//  }
+  //  timerdone = false;
+  //  QTimer::singleShot(1200, this, &Widget::endTimer);
+  //  four_way->connected_motor = 0x02;
+  //  four_way->ack_required = true;
+  //  writeData(four_way->makeFourWayCommand(0x37, 0x02));
+  //  m_serial->waitForBytesWritten(200);
+  //  while (m_serial->waitForReadyRead(100)) {
+  //  }
 }
 
 void Widget::on_initMotor4_clicked() {
@@ -1409,19 +1489,19 @@ void Widget::on_initMotor4_clicked() {
   } else {
     ui->escStatusLabel->setText("M4:Did not connect");
   }
-//  timerdone = false;
-//  QTimer::singleShot(1200, this, &Widget::endTimer);
-//  four_way->connected_motor = 0x03;
-//  four_way->ack_required = true;
-//  writeData(four_way->makeFourWayCommand(0x37, 0x03));
-//  m_serial->waitForBytesWritten(200);
-//  while (m_serial->waitForReadyRead(100)) {
-//  }
+  //  timerdone = false;
+  //  QTimer::singleShot(1200, this, &Widget::endTimer);
+  //  four_way->connected_motor = 0x03;
+  //  four_way->ack_required = true;
+  //  writeData(four_way->makeFourWayCommand(0x37, 0x03));
+  //  m_serial->waitForBytesWritten(200);
+  //  while (m_serial->waitForReadyRead(100)) {
+  //  }
 }
 
 void Widget::sendDirect(const QByteArray sendbuffer, uint16_t buffer_size,
                         uint16_t address) {
-  writeData(RL->setAddress(address)); // set address
+  writeData(RL->setAddress(address));  // set address
   m_serial->waitForBytesWritten(10);
   while (m_serial->waitForReadyRead(20)) {
   }
@@ -1432,11 +1512,11 @@ void Widget::sendDirect(const QByteArray sendbuffer, uint16_t buffer_size,
     four_way->ack_type = BAD_ACK;
     return;
   }
-  writeData(RL->setBufferSize(buffer_size)); // set buffer size
- m_serial->waitForBytesWritten(10);
+  writeData(RL->setBufferSize(buffer_size));  // set buffer size
+  m_serial->waitForBytesWritten(10);
   while (m_serial->waitForReadyRead(20)) {
   }
-  writeData(RL->sendBuffer(sendbuffer)); // send buffer
+  writeData(RL->sendBuffer(sendbuffer));  // send buffer
   m_serial->waitForBytesWritten(20);
   while (m_serial->waitForReadyRead(75)) {
   }
@@ -1447,7 +1527,7 @@ void Widget::sendDirect(const QByteArray sendbuffer, uint16_t buffer_size,
     four_way->ack_type = BAD_ACK;
     return;
   }
-  writeData(RL->writeFlash()); // send write command
+  writeData(RL->writeFlash());  // send write command
   m_serial->waitForBytesWritten(10);
   while (m_serial->waitForReadyRead(30)) {
   }
@@ -1466,74 +1546,13 @@ void Widget::on_writeEEPROM_2_clicked() { on_writeEEPROM_clicked(); }
 
 void Widget::on_writeEEPROM_clicked() {
   four_way->ack_required = true;
-  QByteArray eeprom_out;
-  for (int i = 0; i < 48; i++) {
-    eeprom_out.append(eeprom_buffer->at(i));
-  }
-
-  eeprom_out[5] = ui->maxRocSlider->value();
-  eeprom_out[6] = ui->minDutySlider->value();
-  eeprom_out[7] = ui->disableStickCalibCheckbox->isChecked();
-  eeprom_out[8] = ui->absoluteVoltageSlider->value();
-  eeprom_out[9] = (ui->currentLimitPedit->text().toInt())/2;
-  eeprom_out[10] = ui->currentLimitIedit->text().toInt();
-  eeprom_out[11] = (ui->currentLimitDedit->text().toInt())/2;
-  eeprom_out[12] = ui->activeBrakeSlider->value();
-
-  eeprom_out[17] = (char)ui->rvCheckBox->isChecked();
-  eeprom_out[18] = (char)ui->biDirectionCheckbox->isChecked();
-  eeprom_out[19] = (char)ui->sinCheckBox->isChecked();
-  eeprom_out[20] = (char)ui->comp_pwmCheckbox->isChecked();
-
-  if((char)ui->varPWMCheckBox->isChecked()){
-    eeprom_out[21] = 0x01;
-  } else if((char)ui->autoPWM->isChecked()){
-    eeprom_out[21] = 0x02;
-  } else {
-    eeprom_out[21] = 0x00;
-  }
-
-  eeprom_out[22] = (char)ui->stuckProtectionBox->isChecked();
-  eeprom_out[23] = (char)ui->timingAdvanceSlider->value();
-  eeprom_out[24] = (uint8_t)ui->pwmFreqSlider->value();
-  eeprom_out[25] = (char)ui->startupPowerSlider->value();
-  eeprom_out[26] = (char)ui->motorKVSlider->value();
-  eeprom_out[27] = (char)ui->motorPolesSlider->value();
-
-  if((char)ui->brakecheckbox->isChecked()){
-    eeprom_out[28] = 0x01;
-  } else if((char)ui->activeBrakeCheckbox->isChecked()){
-    eeprom_out[28] = 0x02;
-  }else{
-    eeprom_out[28] = 0x00;
-  }
-
-  eeprom_out[29] = (char)ui->antiStallBox->isChecked();
-  eeprom_out[30] = (char)ui->beepVolumeSlider->value();
-  eeprom_out[31] = (char)ui->thirtymsTelemBox->isChecked();
-  eeprom_out[32] = (char)ui->servoLowSlider->value();
-  eeprom_out[33] = (char)ui->servoHighSlider->value();
-  eeprom_out[34] = (char)ui->servoNeutralSlider->value();
-  eeprom_out[35] = (char)ui->servoDeadBandSlider->value();
-  eeprom_out[36] = (char)ui->lowVoltageCuttoffBox->isChecked();
-  eeprom_out[37] = (char)ui->lowVoltageThresholdSlider->value();
-  eeprom_out[38] = (char)ui->rcCarReverse->isChecked();
-  eeprom_out[39] = (char)ui->hallSensorCheckbox->isChecked();
-  eeprom_out[40] = (char)ui->sineStartupSlider->value();
-  eeprom_out[41] = (char)ui->dragBrakeSlider->value();
-  eeprom_out[42] = (char)ui->runningBrakeStrength->value();
-  eeprom_out[43] = (char)ui->temperatureSlider->value();
-  eeprom_out[44] = (char)ui->currentSlider->value();
-  eeprom_out[45] = (char)ui->sineModePowerSlider->value();
-  eeprom_out[46] = (char)ui->signalComboBox->currentIndex();
-  eeprom_out[47] = (char)ui->AutoTimingButton->isChecked();
+  QByteArray eeprom_out = buildBufferFromUi(*eeprom_buffer);
 
   if (four_way->direct) {
     sendDirect(eeprom_out, 48, four_way->eeprom_address);
     ui->escStatusLabel->setText("WRITE EEPROM SUCCESSFUL");
 
   } else {
-
     writeData(four_way->makeFourWayWriteCommand(eeprom_out, 48,
                                                 four_way->eeprom_address));
 
@@ -1542,7 +1561,7 @@ void Widget::on_writeEEPROM_clicked() {
     }
 
     readData();
-    if (four_way->ack_required == false) { // good ack received from esc
+    if (four_way->ack_required == false) {  // good ack received from esc
       ui->escStatusLabel->setText("WRITE EEPROM SUCCESSFUL");
       writeMusic();
     }
@@ -1553,7 +1572,7 @@ void Widget::hide4wayButtons(bool b) {
   ui->fourWayFrame->setHidden(b);
   ui->connectFrameInputPage->setHidden(b);
   ui->flashMotorsFrame->setHidden(b);
- // ui->tunesFrame->setHidden(b);
+  // ui->tunesFrame->setHidden(b);
   //   ui->flashFourwayFrame->setHidden(b);
 }
 
@@ -1574,7 +1593,6 @@ void Widget::hideEEPROMSettings(bool b) {
 }
 
 void Widget::sendFirstEeprom(uint8_t eeprom_type) {
-
   QByteArray eeprom_out;
   if (eeprom_type == 0) {
     for (int i = 0; i < 48; i++) {
@@ -1599,7 +1617,7 @@ void Widget::sendFirstEeprom(uint8_t eeprom_type) {
 
     readData();
   }
-  if (four_way->ack_required == false) { // good ack received from esc
+  if (four_way->ack_required == false) {  // good ack received from esc
     ui->escStatusLabel->setText("WRITE DEFAULT SUCCESS");
   }
   ui->eepromFrame->setHidden(true);
@@ -1607,7 +1625,7 @@ void Widget::sendFirstEeprom(uint8_t eeprom_type) {
 }
 void Widget::on_sendFirstEEPROM_clicked() {
   sendFirstEeprom(0);
- // resetESC();////////////////////////////////////////////////////////////////////////////////////////////////////////debug!!
+  // resetESC();////////////////////////////////////////////////////////////////////////////////////////////////////////debug!!
 }
 
 void Widget::on_devSettings_stateChanged(int arg1) {
@@ -1628,9 +1646,8 @@ void Widget::on_endPassthrough_clicked() {
 }
 
 void Widget::on_checkBox_stateChanged(int arg1) {
-
   if (ui->checkBox->isChecked()) {
-    writeData(four_way->makeFourWayCommand(0x34, 0x00)); // get msp throttle
+    writeData(four_way->makeFourWayCommand(0x34, 0x00));  // get msp throttle
     m_serial->waitForBytesWritten(200);
     while (m_serial->waitForReadyRead(200)) {
     }
@@ -1646,7 +1663,6 @@ void Widget::on_checkBox_stateChanged(int arg1) {
 
     QByteArray passthroughenable2;
     if (four_way->direct == false) {
-
       //            send_mspCommand(0x68,passthroughenable2);
       //            m_serial->waitForBytesWritten(200);
       //            while (m_serial->waitForReadyRead(200)){
@@ -1684,7 +1700,7 @@ void Widget::on_checkBox_stateChanged(int arg1) {
     //            ui->m4MSPSlider->setValue(motor1throttle);
     //           }
   } else {
-    QByteArray passthroughenable2; // payload  empty here
+    QByteArray passthroughenable2;  // payload  empty here
     ui->horizontalSlider->setValue(0);
     ui->m1MSPSlider->setValue(0);
     ui->m2MSPSlider->setValue(0);
@@ -1780,9 +1796,9 @@ void Widget::sendMSPThrottle() {
   //  char lowByteThrottle = m1throttle & 0xff;
   QByteArray sliderThrottle;
 
-  sliderThrottle.append((char)m1throttle & 0xff);        // motor 1
-  sliderThrottle.append((char)(m1throttle >> 8) & 0xff); //
-  sliderThrottle.append((char)m2throttle & 0xff);        // motor 2
+  sliderThrottle.append((char)m1throttle & 0xff);         // motor 1
+  sliderThrottle.append((char)(m1throttle >> 8) & 0xff);  //
+  sliderThrottle.append((char)m2throttle & 0xff);         // motor 2
   sliderThrottle.append((char)(m2throttle >> 8) & 0xff);
   sliderThrottle.append((char)m3throttle & 0xff);
   sliderThrottle.append((char)(m3throttle >> 8) & 0xff);
@@ -1808,14 +1824,12 @@ void Widget::on_m1MSPSlider_valueChanged(int value) {
 }
 
 void Widget::on_m2MSPSlider_valueChanged(int value) {
-
   QString s = QString::number(value);
   ui->m2throttle->setText(s);
   sendMSPThrottle();
 }
 
 void Widget::on_m3MSPSlider_valueChanged(int value) {
-
   QString s = QString::number(value);
   ui->m3throttle->setText(s);
   sendMSPThrottle();
@@ -1868,10 +1882,10 @@ void Widget::on_servoDeadBandSlider_valueChanged(int value) {
 
 void Widget::on_lowVoltageLineEdit_editingFinished() {
   ui->lowVoltageThresholdSlider->setValue(
-      (ui->lowVoltageLineEdit->text().toInt()*100));
+      (ui->lowVoltageLineEdit->text().toInt() * 100));
 }
 void Widget::on_lowVoltageThresholdSlider_valueChanged(int value) {
-  ui->lowVoltageLineEdit->setText(QString::number((float)(value + 250)/100));
+  ui->lowVoltageLineEdit->setText(QString::number((float)(value + 250) / 100));
 }
 
 void Widget::on_initMotor1_3_clicked() { on_initMotor1_clicked(); }
@@ -1896,56 +1910,52 @@ int Widget::getshift(int some_number)
   return pos;
 }
 
+void Widget::on_uploadMusic_clicked() {
+  QString music = ui->MusicTextEdit->toPlainText();
+  uint8_t bytes[128];
+  uint16_t gen_length = ui->genLengthSpinbox->value();
+  uint16_t newbpm = (12 * 240) / gen_length;
 
-void Widget::on_uploadMusic_clicked()
-{
-   QString music = ui->MusicTextEdit->toPlainText();
-   uint8_t bytes[128];
-   uint16_t gen_length = ui->genLengthSpinbox->value();
-   uint16_t newbpm =  (12*240) / gen_length;
-
-   blheli32_to_bluejay_array(music,newbpm,bytes);
+  blheli32_to_bluejay_array(music, newbpm, bytes);
 
   // for( int i = 0; i < 128; i ++){
   //  qInfo(" output integer %i", bytes[i]+128);
   //  }
 
-   QByteArray eeprom_music_out;
-   uint16_t buffersize2 = 128;
- //  qInfo(" buffersize: %i", buffersize2);
+  QByteArray eeprom_music_out;
+  uint16_t buffersize2 = 128;
+  //  qInfo(" buffersize: %i", buffersize2);
 
-           for (int i = 0; i < 48; i++) {
-               eeprom_music_out.append((char)eeprom_buffer->at(i));
-           }
-            for (int i = 0; i < buffersize2; i++) {
-                eeprom_music_out.append((char)bytes[i]);
+  for (int i = 0; i < 48; i++) {
+    eeprom_music_out.append((char)eeprom_buffer->at(i));
+  }
+  for (int i = 0; i < buffersize2; i++) {
+    eeprom_music_out.append((char)bytes[i]);
+  }
+  eeprom_music_out[50] = (255 - (ui->genIntervalSpinbox->value()));
+  while (eeprom_music_out.size() % 4 != 0)
+    eeprom_music_out.append('\xFF');
 
-            }
-            eeprom_music_out[50]= (255 - (ui->genIntervalSpinbox->value()));
-            while (eeprom_music_out.size() % 4 != 0)
-                eeprom_music_out.append('\xFF');
+  uint16_t totalbuffersize = eeprom_music_out.size();
+  // qInfo(" totalbuffersize: %i", totalbuffersize);
+  four_way->ack_required = true;
 
-            uint16_t totalbuffersize = eeprom_music_out.size();
-//qInfo(" totalbuffersize: %i", totalbuffersize);
-       four_way->ack_required = true;
+  if (four_way->direct) {
+    sendDirect(eeprom_music_out, totalbuffersize, four_way->eeprom_address);
+  } else {
+    writeData(four_way->makeFourWayWriteCommand(eeprom_music_out, totalbuffersize,
+                                                four_way->eeprom_address));
+    m_serial->waitForBytesWritten(1500);
+    while (m_serial->waitForReadyRead(1500)) {
+    }
 
-       if (four_way->direct) {
-           sendDirect(eeprom_music_out, totalbuffersize, four_way->eeprom_address);
-       } else {
-           writeData(four_way->makeFourWayWriteCommand(eeprom_music_out, totalbuffersize,
-                                                       four_way->eeprom_address));
-           m_serial->waitForBytesWritten(1500);
-           while (m_serial->waitForReadyRead(1500)) {
-           }
-
-           readData();
-       }
-       if (four_way->ack_required == false) { // good ack received from esc
-           ui->escStatusLabel->setText("WRITE DEFAULT SUCCESS");
-       }
-       ui->eepromFrame->setHidden(true);
-       ui->inputservoFrame->setHidden(true);
-
+    readData();
+  }
+  if (four_way->ack_required == false) {  // good ack received from esc
+    ui->escStatusLabel->setText("WRITE DEFAULT SUCCESS");
+  }
+  ui->eepromFrame->setHidden(true);
+  ui->inputservoFrame->setHidden(true);
 }
 
 void Widget::on_crawler_default_button_clicked() {
@@ -1953,495 +1963,261 @@ void Widget::on_crawler_default_button_clicked() {
   resetESC();
 }
 
-void Widget::on_saveConfigButton_clicked()
-{
-  QByteArray eeprom_out;
-  for (int i = 0; i < 48; i++) {
-    eeprom_out.append(eeprom_buffer->at(i));
-  }
-  eeprom_out[5] = ui->maxRocSlider->value();
-  eeprom_out[6] = ui->minDutySlider->value();
-  eeprom_out[7] = ui->disableStickCalibCheckbox->isChecked();
-  eeprom_out[8] = ui->absoluteVoltageSlider->value();
-  eeprom_out[9] = (ui->currentLimitPedit->text().toInt())/2;
-  eeprom_out[10] = ui->currentLimitIedit->text().toInt();
-  eeprom_out[11] = (ui->currentLimitDedit->text().toInt())/2;
-  eeprom_out[12] = ui->activeBrakeSlider->value();
-
-  eeprom_out[17] = (char)ui->rvCheckBox->isChecked();
-  eeprom_out[18] = (char)ui->biDirectionCheckbox->isChecked();
-  eeprom_out[19] = (char)ui->sinCheckBox->isChecked();
-  eeprom_out[20] = (char)ui->comp_pwmCheckbox->isChecked();
-
-  if((char)ui->varPWMCheckBox->isChecked()){
-    eeprom_out[21] = 0x01;
-  } else if((char)ui->autoPWM->isChecked()){
-    eeprom_out[21] = 0x02;
-  }else{
-    eeprom_out[21] = 0x00;
-  }
-
-  eeprom_out[22] = (char)ui->stuckProtectionBox->isChecked();
-  eeprom_out[23] = (char)ui->timingAdvanceSlider->value();
-  eeprom_out[24] = (uint8_t)ui->pwmFreqSlider->value();
-  eeprom_out[25] = (char)ui->startupPowerSlider->value();
-  eeprom_out[26] = (char)ui->motorKVSlider->value();
-  eeprom_out[27] = (char)ui->motorPolesSlider->value();
-
-  if((char)ui->brakecheckbox->isChecked()){
-    eeprom_out[28] = 0x01;
-  } else if ((char)ui->activeBrakeCheckbox->isChecked()){
-    eeprom_out[28] = 0x02;
-  }else{
-    eeprom_out[28] = 0x00;
-  }
-
-
-
-  eeprom_out[29] = (char)ui->antiStallBox->isChecked();
-  eeprom_out[30] = (char)ui->beepVolumeSlider->value();
-  eeprom_out[31] = (char)ui->thirtymsTelemBox->isChecked();
-  eeprom_out[32] = (char)ui->servoLowSlider->value();
-  eeprom_out[33] = (char)ui->servoHighSlider->value();
-  eeprom_out[34] = (char)ui->servoNeutralSlider->value();
-  eeprom_out[35] = (char)ui->servoDeadBandSlider->value();
-  eeprom_out[36] = (char)ui->lowVoltageCuttoffBox->isChecked();
-  eeprom_out[37] = (char)ui->lowVoltageThresholdSlider->value();
-  eeprom_out[38] = (char)ui->rcCarReverse->isChecked();
-  eeprom_out[39] = (char)ui->hallSensorCheckbox->isChecked();
-  eeprom_out[40] = (char)ui->sineStartupSlider->value();
-  eeprom_out[41] = (char)ui->dragBrakeSlider->value();
-  eeprom_out[42] = (char)ui->runningBrakeStrength->value();
-  eeprom_out[43] = (char)ui->temperatureSlider->value();
-  eeprom_out[44] = (char)ui->currentSlider->value();
-  eeprom_out[45] = (char)ui->sineModePowerSlider->value();
-  eeprom_out[46] = (char)ui->signalComboBox->currentIndex();
-  eeprom_out[47] = (char)ui->AutoTimingButton->isChecked();
-
-
+void Widget::on_saveConfigButton_clicked() {
+  QByteArray eeprom_out = buildBufferFromUi(*eeprom_buffer);
 
   QFileDialog::saveFileContent(eeprom_out, "am32_v3_config.bin");
   qInfo("file written");
-   ui->configFileInfo->setText("Config File Saved");
+  ui->configFileInfo->setText("Config File Saved");
 }
 
-
-void Widget::loadConfig(){
-    QByteArray fileBuffer;
-    uint16_t buffer_length = 48;
-    if(firstOffline == true){
-        for (int i = 0; i < 48; i++) {
-            fileBuffer.append(air_starteeprom[i]);
-
-        }
-        firstOffline = false;
-        //   override = 0;
-    }else{
-
-
-        filename = QFileDialog::getOpenFileName(this, tr("Open File"),
-                                                "c:", tr("All Files (*.bin)"));
-        QFile inputFile(filename);
-        inputFile.open(QIODevice::ReadOnly);
-        if(inputFile.isOpen()){
-
-            fileBuffer = inputFile.readAll();
-        }
+void Widget::loadConfig() {
+  QByteArray fileBuffer;
+  uint16_t buffer_length = 48;
+  if (firstOffline == true) {
+    for (int i = 0; i < 48; i++) {
+      fileBuffer.append(air_starteeprom[i]);
     }
-    if ((fileBuffer.at(0) == (char)0x01)) {
-        if ((fileBuffer.at(1) == (char)0xFF) ||
-            (fileBuffer.at(2) ==
-             (char)0x00)) { // if eeprom version is 0xff it means boot bit is set
-            // but no defaults have been sent
-            QMessageBox::warning( // also if bootloader version is 00 it means it has
-                // been written
-                this, tr("Application Name"),
-                tr("No settings found use 'Send default EEPROM' under FLASH tab"));
-            ui->eepromFrame->setHidden(true);
-            ui->inputservoFrame->setHidden(true);
-            ui->flashFourwayFrame->setHidden(false);
-            ui->escStatusLabel_2->setText("Connected - No EEprom");
-            ui->escStatusLabel->setText("Connected - No EEprom");
-            //    return false;
-        }
-        if ((fileBuffer.at(1) <
-             (char)0x01)) { // if eeprom version is 0xff it means boot bit is set
-            // but no defaults have been sent
-            QMessageBox::warning( // also if bootloader version is 00 it means it has
-                // been written
-                this, tr("Application Name"),
-                tr("Outdated firmware detected 'Please update to lastest AM32 "
-                   "release"));
-            //   ui->sendFirstEEPROM->setHidden(true);
-            ui->crawler_default_button->setHidden(true);
-            ui->eepromFrame->setHidden(true);
-            ui->inputservoFrame->setHidden(true);
-            ui->flashFourwayFrame->setHidden(false);
-            ui->escStatusLabel_2->setText("Connected - Firmware Update Required");
-            ui->escStatusLabel->setText("Connected - Firmware Update Required");
-            //    return false;
-        }
-
-
-        ui->maxRocSlider->setValue((uint8_t)(fileBuffer.at(5)));
-        ui->minDutySlider->setValue((uint8_t)(fileBuffer.at(6)));
-        if(fileBuffer.at(7) == 0x01){
-            ui->disableStickCalibCheckbox->setChecked(true);
-        }else{
-            ui->disableStickCalibCheckbox->setChecked(false);
-        }
-        ui->absoluteVoltageSlider->setValue((uint8_t)(fileBuffer.at(8)));
-        ui->currentLimitPedit->setText(QString::number((uint8_t)(fileBuffer.at(9))*2));
-        ui->currentLimitIedit->setText(QString::number((uint8_t)(fileBuffer.at(10))));
-        ui->currentLimitDedit->setText(QString::number((uint8_t)(fileBuffer.at(11))*2));
-        ui->activeBrakeSlider->setValue((uint8_t)(fileBuffer.at(12)));
-
-        if(fileBuffer.at(17) == 0x01){
-            ui->rvCheckBox->setChecked(true);
-        }else{
-            ui->rvCheckBox->setChecked(false);
-        }
-        if (fileBuffer.at(18) == 0x01) {
-            ui->biDirectionCheckbox->setChecked(true);
-        } else {
-            ui->biDirectionCheckbox->setChecked(false);
-        }
-        if (fileBuffer.at(19) == 0x01) {
-            ui->sinCheckBox->setChecked(true);
-        } else {
-            ui->sinCheckBox->setChecked(false);
-        }
-        if (fileBuffer.at(20) == 0x01) {
-            ui->comp_pwmCheckbox->setChecked(true);
-        } else {
-            ui->comp_pwmCheckbox->setChecked(false);
-        }
-        if (fileBuffer.at(21) == 0x01) {
-            ui->varPWMCheckBox->setChecked(true);
-        } else {
-            ui->varPWMCheckBox->setChecked(false);
-        }
-        if (fileBuffer.at(21) == 0x02) {
-            ui->autoPWM->setChecked(true);
-        } else {
-            ui->autoPWM->setChecked(false);
-        }
-
-        if (fileBuffer.at(22) == 0x01) {
-            ui->stuckProtectionBox->setChecked(true);
-        } else {
-            ui->stuckProtectionBox->setChecked(false);
-        }
-        ui->timingAdvanceLCD->display(((fileBuffer.at(23))-10)*0.9375);
-        ui->timingAdvanceSlider->setValue(fileBuffer.at(23));
-        ui->pwmFreqSlider->setValue(fileBuffer.at(24));
-        ui->startupPowerSlider->setValue((uint8_t)fileBuffer.at(25));
-        ui->motorKVSlider->setValue((uint8_t)fileBuffer.at(26));
-        ui->motorPolesSlider->setValue(fileBuffer.at(27));
-        if (fileBuffer.at(28) == 0x01) {
-            ui->brakecheckbox->setChecked(true);
-        } else {
-            ui->brakecheckbox->setChecked(false);
-        }
-
-        if (fileBuffer.at(28) == 0x02) {
-            ui->activeBrakeCheckbox->setChecked(true);
-        } else {
-            ui->activeBrakeCheckbox->setChecked(false);
-        }
-
-        if (fileBuffer.at(29) == 0x01) {
-            ui->antiStallBox->setChecked(true);
-        } else {
-            ui->antiStallBox->setChecked(false);
-        }
-        if (fileBuffer.at(1) == 0) { // if ESC is curently on eeprom version 0
-            ui->beepVolumeSlider->setValue(5);
-            ui->servoLowSlider->setValue(128);
-            ui->servoHighSlider->setValue(128);
-            ui->servoNeutralSlider->setValue(128);
-            ui->servoDeadBandSlider->setValue(50);
-            ui->thirtymsTelemBox->setChecked(false);
-        } else {
-
-            ui->beepVolumeSlider->setValue(fileBuffer.at(30));
-            if (fileBuffer.at(31) == 0x01) {
-                ui->thirtymsTelemBox->setChecked(true);
-            } else {
-                ui->thirtymsTelemBox->setChecked(false);
-            }
-            ui->servoLowSlider->setValue((uint8_t)(fileBuffer.at(32)));
-            ui->servoHighSlider->setValue((uint8_t)(fileBuffer.at(33)));
-            ui->servoNeutralSlider->setValue((uint8_t)(fileBuffer.at(34)));
-            ui->servoDeadBandSlider->setValue((uint8_t)(fileBuffer.at(35)));
-
-            if (fileBuffer.at(36) == 0x01) {
-                ui->lowVoltageCuttoffBox->setChecked(true);
-            } else {
-                ui->lowVoltageCuttoffBox->setChecked(false);
-            }
-            ui->lowVoltageThresholdSlider->setValue((uint8_t)(fileBuffer.at(37)));
-            if (fileBuffer.at(38) == 0x01) {
-                ui->rcCarReverse->setChecked(true);
-            } else {
-                ui->rcCarReverse->setChecked(false);
-            }
-            if (fileBuffer.at(39) == 0x01) {
-                ui->hallSensorCheckbox->setChecked(true);
-            } else {
-                ui->hallSensorCheckbox->setChecked(false);
-            }
-            ui->sineStartupSlider->setValue((uint8_t)(fileBuffer.at(40)));
-            ui->dragBrakeSlider->setValue((uint8_t)(fileBuffer.at(41)));
-
-            ui->runningBrakeStrength->setValue((uint8_t)(fileBuffer.at(42)));
-            if ((uint8_t)(fileBuffer.at(45)) > 10) {
-                ui->sineModePowerSlider->setValue(5);
-            } else {
-                ui->sineModePowerSlider->setValue((uint8_t)(fileBuffer.at(45)));
-            }
-
-            if ((uint8_t)(fileBuffer.at(43)) < 70) {
-                ui->temperatureSlider->setValue(142);
-            } else {
-                ui->temperatureSlider->setValue((uint8_t)(fileBuffer.at(43)));
-            }
-            ui->currentSlider->setValue((uint8_t)(fileBuffer.at(44)));
-            ui->signalComboBox->setCurrentIndex((uint8_t)(fileBuffer.at(46)));
-        }
-
-        QString name; // 2 bytes
-        //    name.append(QChar(fileBuffer.at(5)));
-        //    name.append(QChar(fileBuffer.at(6)));
-        //    name.append(QChar(fileBuffer.at(7)));
-        //    name.append(QChar(fileBuffer.at(8)));
-        //    name.append(QChar(fileBuffer.at(9)));
-        //    name.append(QChar(fileBuffer.at(10)));
-        //    name.append(QChar(fileBuffer.at(11)));
-        //    name.append(QChar(fileBuffer.at(12)));
-        //    name.append(QChar(fileBuffer.at(13)));
-        //    name.append(QChar(fileBuffer.at(14)));
-        //    name.append(QChar(fileBuffer.at(15)));
-        //    name.append(QChar(fileBuffer.at(16)));
-        ui->FirmwareNameLabel->setText(name);
-
-        QString version = "FW Rev:";
-        QString major = QString::number((uint8_t)fileBuffer.at(3));
-        QString minor = QString::number((uint8_t)fileBuffer.at(4));
-        version.append(major);
-        version.append(".");
-        version.append(minor);
-        ui->FirmwareVerionsLabel->setText(version);
-
-        QChar charas = fileBuffer.at(18);
-        int output = charas.toLatin1();
-        qInfo(" output integer %i", output);
-        eeprom_buffer->clear();
-        //     eeprom_buffer = fileBuffer;
-        for (int i = 0; i < buffer_length; i++) {
-            eeprom_buffer->append(fileBuffer.at(i));
-        }
-
-        ui->configFileInfo->setText("Config File:" + filename);
-
+    firstOffline = false;
+    //   override = 0;
+  } else {
+    filename = QFileDialog::getOpenFileName(this, tr("Open File"),
+                                            "c:", tr("All Files (*.bin)"));
+    QFile inputFile(filename);
+    inputFile.open(QIODevice::ReadOnly);
+    if (inputFile.isOpen()) {
+      fileBuffer = inputFile.readAll();
+    }
+  }
+  if (fileBuffer.size() < 48) {  // dialog canceled, or file missing/too short
+    return;
+  }
+  if ((fileBuffer.at(0) == (char)0x01)) {
+    if ((fileBuffer.at(1) == (char)0xFF) ||
+        (fileBuffer.at(2) ==
+         (char)0x00)) {  // if eeprom version is 0xff it means boot bit is set
+      // but no defaults have been sent
+      QMessageBox::warning(  // also if bootloader version is 00 it means it has
+                             // been written
+          this, tr("Application Name"),
+          tr("No settings found use 'Send default EEPROM' under FLASH tab"));
+      ui->eepromFrame->setHidden(true);
+      ui->inputservoFrame->setHidden(true);
+      ui->flashFourwayFrame->setHidden(false);
+      ui->escStatusLabel_2->setText("Connected - No EEprom");
+      ui->escStatusLabel->setText("Connected - No EEprom");
+      //    return false;
+    }
+    if ((fileBuffer.at(1) <
+         (char)0x01)) {  // if eeprom version is 0xff it means boot bit is set
+      // but no defaults have been sent
+      QMessageBox::warning(  // also if bootloader version is 00 it means it has
+                             // been written
+          this, tr("Application Name"),
+          tr("Outdated firmware detected 'Please update to lastest AM32 "
+             "release"));
+      //   ui->sendFirstEEPROM->setHidden(true);
+      ui->crawler_default_button->setHidden(true);
+      ui->eepromFrame->setHidden(true);
+      ui->inputservoFrame->setHidden(true);
+      ui->flashFourwayFrame->setHidden(false);
+      ui->escStatusLabel_2->setText("Connected - Firmware Update Required");
+      ui->escStatusLabel->setText("Connected - Firmware Update Required");
+      //    return false;
     }
 
-}
+    applyBufferToUi(fileBuffer);
 
+    QString name;  // 2 bytes
+    //    name.append(QChar(fileBuffer.at(5)));
+    //    name.append(QChar(fileBuffer.at(6)));
+    //    name.append(QChar(fileBuffer.at(7)));
+    //    name.append(QChar(fileBuffer.at(8)));
+    //    name.append(QChar(fileBuffer.at(9)));
+    //    name.append(QChar(fileBuffer.at(10)));
+    //    name.append(QChar(fileBuffer.at(11)));
+    //    name.append(QChar(fileBuffer.at(12)));
+    //    name.append(QChar(fileBuffer.at(13)));
+    //    name.append(QChar(fileBuffer.at(14)));
+    //    name.append(QChar(fileBuffer.at(15)));
+    //    name.append(QChar(fileBuffer.at(16)));
+    ui->FirmwareNameLabel->setText(name);
 
+    QString version = "FW Rev:";
+    QString major = QString::number((uint8_t)fileBuffer.at(3));
+    QString minor = QString::number((uint8_t)fileBuffer.at(4));
+    version.append(major);
+    version.append(".");
+    version.append(minor);
+    ui->FirmwareVerionsLabel->setText(version);
 
-void Widget::on_loadConfigButton_clicked()
-{
-loadConfig();
-}
+    QChar charas = fileBuffer.at(18);
+    int output = charas.toLatin1();
+    qInfo(" output integer %i", output);
+    eeprom_buffer->clear();
+    //     eeprom_buffer = fileBuffer;
+    for (int i = 0; i < buffer_length; i++) {
+      eeprom_buffer->append(fileBuffer.at(i));
+    }
 
-void Widget::on_OfflineCheckBox_stateChanged(int arg1)
-{
-   if(ui->OfflineCheckBox->isChecked()){
-     hide4wayButtons(false);
-     hideESCSettings(false);
-     hideEEPROMSettings(false);
-     if (ui->tabWidget->count() == 5) {
-       ui->tabWidget->removeTab(4);
-       ui->tabWidget->removeTab(2);
-       ui->tabWidget->removeTab(1);
-       showSingleMotor(true);
-     firstOffline = true;
-       loadConfig();
-       ui->writeEEPROM->setHidden(true);
-       ui->writeEEPROM_2->setHidden(true);
-   }
-
-  }else{
-    hide4wayButtons(true);
-    hideESCSettings(true);
-    hideEEPROMSettings(true);
-     ui->tabWidget->insertTab(2, ui->tab_2, "Flash");
-     ui->tabWidget->insertTab(2, ui->tab_3, "Motor Control");
-     showSingleMotor(false);
-     ui->writeEEPROM->setHidden(false);
-     ui->writeEEPROM_2->setHidden(false);
+    ui->configFileInfo->setText("Config File:" + filename);
   }
 }
 
+void Widget::on_loadConfigButton_clicked() {
+  loadConfig();
+}
 
-void Widget::on_maxRocSlider_valueChanged(int value)
-{
+void Widget::on_OfflineCheckBox_stateChanged(int arg1) {
+  if (ui->OfflineCheckBox->isChecked()) {
+    hide4wayButtons(false);
+    hideESCSettings(false);
+    hideEEPROMSettings(false);
+    if (ui->tabWidget->count() == 5) {
+      ui->tabWidget->removeTab(4);
+      ui->tabWidget->removeTab(2);
+      ui->tabWidget->removeTab(1);
+      showSingleMotor(true);
+      firstOffline = true;
+      loadConfig();
+      ui->writeEEPROM->setHidden(true);
+      ui->writeEEPROM_2->setHidden(true);
+    }
+
+  } else {
+    hide4wayButtons(true);
+    hideESCSettings(true);
+    hideEEPROMSettings(true);
+    ui->tabWidget->insertTab(2, ui->tab_2, "Flash");
+    ui->tabWidget->insertTab(2, ui->tab_3, "Motor Control");
+    showSingleMotor(false);
+    ui->writeEEPROM->setHidden(false);
+    ui->writeEEPROM_2->setHidden(false);
+  }
+}
+
+void Widget::on_maxRocSlider_valueChanged(int value) {
   float dv = float(value);
-  QString text = QString::number(dv/10, 'f', 1);
+  QString text = QString::number(dv / 10, 'f', 1);
   ui->rocLineEdit->setText(text);
 }
 
-
-void Widget::on_minDutySlider_valueChanged(int value)
-{
+void Widget::on_minDutySlider_valueChanged(int value) {
   float dv = float(value);
-  QString text = QString::number(dv/2, 'f', 1);
+  QString text = QString::number(dv / 2, 'f', 1);
   ui->minDutyLineEdit->setText(text);
 }
 
-void Widget::on_activeBrakeSlider_valueChanged(int value)
-{
+void Widget::on_activeBrakeSlider_valueChanged(int value) {
   QString text = QString::number(value);
   ui->activeBrakeLineEdit->setText(text);
 }
 
-
-void Widget::on_rocLineEdit_textEdited(const QString &arg1)
-{
-
+void Widget::on_rocLineEdit_textEdited(const QString &arg1) {
 }
 
-
-void Widget::on_minDutyLineEdit_editingFinished()
-{
+void Widget::on_minDutyLineEdit_editingFinished() {
   QString arg1 = ui->minDutyLineEdit->text();
-  if(arg1.toFloat() <= 25 && arg1.toFloat() >= 0){
-  ui->minDutySlider->setValue(arg1.toFloat()*2);
-  }else{
-  qInfo("invalid input");
-  ui->minDutySlider->setValue(0);
+  if (arg1.toFloat() <= 25 && arg1.toFloat() >= 0) {
+    ui->minDutySlider->setValue(arg1.toFloat() * 2);
+  } else {
+    qInfo("invalid input");
+    ui->minDutySlider->setValue(0);
   }
 }
 
-
-void Widget::on_rocLineEdit_editingFinished()
-{
+void Widget::on_rocLineEdit_editingFinished() {
   QString arg1 = ui->rocLineEdit->text();
-  if(arg1.toFloat() <= 20 && arg1.toFloat() > 0){
-  ui->maxRocSlider->setValue(arg1.toFloat() * 10);
-  }else{
-  qInfo("invalid input");
-  ui->maxRocSlider->setValue(1);
+  if (arg1.toFloat() <= 20 && arg1.toFloat() > 0) {
+    ui->maxRocSlider->setValue(arg1.toFloat() * 10);
+  } else {
+    qInfo("invalid input");
+    ui->maxRocSlider->setValue(1);
   }
 }
 
-
-
-
-
-void Widget::on_activeBrakeLineEdit_editingFinished()
-{
+void Widget::on_activeBrakeLineEdit_editingFinished() {
   QString arg1 = ui->activeBrakeLineEdit->text();
-  if(arg1.toInt() <= 10 && arg1.toInt() > 0){
-  ui->activeBrakeSlider->setValue(arg1.toInt());
-  }else{
-  qInfo("invalid input");
-  ui->activeBrakeSlider->setValue(1);
+  if (arg1.toInt() <= 10 && arg1.toInt() > 0) {
+    ui->activeBrakeSlider->setValue(arg1.toInt());
+  } else {
+    qInfo("invalid input");
+    ui->activeBrakeSlider->setValue(1);
   }
 }
 
-
-void Widget::on_lowVoltageCuttoffBox_stateChanged(int arg1)
-{
-  if(ui->lowVoltageCuttoffBox->isChecked()){
-  ui->absoluteVotlageCheckbox->setEnabled(false);
-  }else{
-  ui->absoluteVotlageCheckbox->setEnabled(true);
+void Widget::on_lowVoltageCuttoffBox_stateChanged(int arg1) {
+  if (ui->lowVoltageCuttoffBox->isChecked()) {
+    ui->absoluteVotlageCheckbox->setEnabled(false);
+  } else {
+    ui->absoluteVotlageCheckbox->setEnabled(true);
   }
 }
 
-
-void Widget::on_absoluteVotlageCheckbox_stateChanged(int arg1)
-{
-  if(ui->absoluteVotlageCheckbox->isChecked()){
-  ui->lowVoltageCuttoffBox->setEnabled(false);
-  }else{
-  ui->lowVoltageCuttoffBox->setEnabled(true);
+void Widget::on_absoluteVotlageCheckbox_stateChanged(int arg1) {
+  if (ui->absoluteVotlageCheckbox->isChecked()) {
+    ui->lowVoltageCuttoffBox->setEnabled(false);
+  } else {
+    ui->lowVoltageCuttoffBox->setEnabled(true);
   }
 }
 
-
-void Widget::on_brakecheckbox_stateChanged(int arg1)
-{
-  if(ui->brakecheckbox->isChecked()){
-  ui->activeBrakeCheckbox->setEnabled(false);
-  ui->dragBrakeSlider->setEnabled(true);
-  }else{
-  ui->activeBrakeCheckbox->setEnabled(true);
-  ui->dragBrakeSlider->setEnabled(false);
+void Widget::on_brakecheckbox_stateChanged(int arg1) {
+  if (ui->brakecheckbox->isChecked()) {
+    ui->activeBrakeCheckbox->setEnabled(false);
+    ui->dragBrakeSlider->setEnabled(true);
+  } else {
+    ui->activeBrakeCheckbox->setEnabled(true);
+    ui->dragBrakeSlider->setEnabled(false);
   }
 }
 
-
-void Widget::on_activeBrakeCheckbox_stateChanged(int arg1)
-{
-  if(ui->activeBrakeCheckbox->isChecked()){
-  ui->brakecheckbox->setEnabled(false);
-  ui->activeBrakeSlider->setEnabled(true);
-  }else{
-  ui->brakecheckbox->setEnabled(true);
-  ui->activeBrakeSlider->setEnabled(false);
+void Widget::on_activeBrakeCheckbox_stateChanged(int arg1) {
+  if (ui->activeBrakeCheckbox->isChecked()) {
+    ui->brakecheckbox->setEnabled(false);
+    ui->activeBrakeSlider->setEnabled(true);
+  } else {
+    ui->brakecheckbox->setEnabled(true);
+    ui->activeBrakeSlider->setEnabled(false);
   }
 }
 
-
-void Widget::on_absoluteVoltageSlider_valueChanged(int value)
-{
+void Widget::on_absoluteVoltageSlider_valueChanged(int value) {
   QString text = QString::number(value);
   ui->absoluateVoltageLineedit->setText(text);
 }
 
-
-void Widget::on_currentLimitPedit_editingFinished()
-{
+void Widget::on_currentLimitPedit_editingFinished() {
   QString arg1 = ui->currentLimitPedit->text();
-  if(arg1.toInt() <= 500 && arg1.toInt() >= 0){
-  }else{
-  qInfo("invalid input");
-  ui->currentLimitPedit->setText("100");
+  if (arg1.toInt() <= 500 && arg1.toInt() >= 0) {
+  } else {
+    qInfo("invalid input");
+    ui->currentLimitPedit->setText("100");
   }
 }
 
-
-void Widget::on_currentLimitDedit_editingFinished()
-{
-      QString arg1 = ui->currentLimitDedit->text();
-  if(arg1.toInt() <= 500 && arg1.toInt() >=0){
-  }else{
-  qInfo("invalid input");
-  ui->currentLimitDedit->setText("100");
+void Widget::on_currentLimitDedit_editingFinished() {
+  QString arg1 = ui->currentLimitDedit->text();
+  if (arg1.toInt() <= 500 && arg1.toInt() >= 0) {
+  } else {
+    qInfo("invalid input");
+    ui->currentLimitDedit->setText("100");
   }
 }
 
-
-void Widget::on_currentLimitIedit_editingFinished()
-{
-      QString arg1 = ui->currentLimitIedit->text();
-  if(arg1.toInt() <= 255 && arg1.toInt() >=0){
-  }else{
-  qInfo("invalid input");
-  ui->currentLimitIedit->setText("0");
+void Widget::on_currentLimitIedit_editingFinished() {
+  QString arg1 = ui->currentLimitIedit->text();
+  if (arg1.toInt() <= 255 && arg1.toInt() >= 0) {
+  } else {
+    qInfo("invalid input");
+    ui->currentLimitIedit->setText("0");
   }
 }
-
 
 // void Widget::on_uploadMusic_clicked()
 // {
 
-
 //   //  QString data = ui->musicLineEdit->text();
-
 
 //     QString str = ui->MusicTextEdit->toPlainText();
 //     QStringList parts = str.split(",", Qt::SkipEmptyParts);
@@ -2497,15 +2273,10 @@ void Widget::on_currentLimitIedit_editingFinished()
 //     ui->inputservoFrame->setHidden(true);
 // }
 
+void Widget::on_initMotor1_4_clicked() { on_initMotor1_clicked(); }
 
-void Widget::on_initMotor1_4_clicked(){ on_initMotor1_clicked(); }
+void Widget::on_initMotor2_4_clicked() { on_initMotor2_clicked(); }
 
+void Widget::on_initMotor3_4_clicked() { on_initMotor3_clicked(); }
 
-void Widget::on_initMotor2_4_clicked(){ on_initMotor2_clicked(); }
-
-
-void Widget::on_initMotor3_4_clicked(){ on_initMotor3_clicked(); }
-
-
-void Widget::on_initMotor4_4_clicked(){ on_initMotor4_clicked(); }
-
+void Widget::on_initMotor4_4_clicked() { on_initMotor4_clicked(); }
