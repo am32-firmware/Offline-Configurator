@@ -25,6 +25,7 @@ SOURCES += \
     BF_ROOTLOADER.cpp \
     bluejaymelody.cpp \
     fourwayif.cpp \
+    hexfile.cpp \
     main.cpp \
     music.cpp \
     widget.cpp
@@ -34,6 +35,7 @@ HEADERS += \
     bluejaymelody.h \
     defaults.h \
     fourwayif.h \
+    hexfile.h \
     music.h \
     widget.h
 
