@@ -1,0 +1,9 @@
+build/
+.qtc_clangd/
+*.pro.user
+*.pro.user.*
+*.creator.user
+*.autosave
+*.TMP
+*~
+.claude/

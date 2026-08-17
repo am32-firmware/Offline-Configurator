@@ -5,8 +5,8 @@
 #include <QByteArray>
 #include <stdint.h>
 
-#define BLUEJAY_ARRAY_SIZE  128
-#define BLUEJAY_MAX_PAIRS    62   /* (128 - 4) / 2 */
+#define BLUEJAY_ARRAY_SIZE 128
+#define BLUEJAY_MAX_PAIRS 62 /* (128 - 4) / 2 */
 
 /**
  * blheli32_to_bluejay_array()
@@ -32,4 +32,3 @@ int blheli32_to_bluejay_array(const QString &notation, int bpm, uint8_t out[BLUE
 void bluejay_array_to_c_literal(const uint8_t arr[BLUEJAY_ARRAY_SIZE], const char *var_name);
 
 #endif
-

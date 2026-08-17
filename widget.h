@@ -5,286 +5,306 @@
 #include <QSerialPort>
 #include <QLabel>
 #include <QComboBox>
+#include <functional>
+#include <vector>
 
 class OutConsole;
 class FourWayIF;
 class BF_ROOTLOADER;
 
 QT_BEGIN_NAMESPACE
-namespace Ui { class Widget; }
+namespace Ui {
+class Widget;
+}
 QT_END_NAMESPACE
 
-class Widget : public QWidget
-{
-    Q_OBJECT
+// Describes one field of the 48-byte ESC EEPROM layout (see defaults.h for
+// the byte-by-byte reference) and how it binds to a UI control. A single
+// table of these (built by Widget::eepromFieldTable()) is the one place that
+// knows the offset/range/UI-widget for every setting; Widget::applyBufferToUi()
+// and Widget::buildBufferFromUi() walk it generically instead of each caller
+// hand-rolling its own copy of the same 40-odd field list.
+struct EepromField {
+  int offset;                         // byte offset within the 48-byte EEPROM block
+  const char *name;                   // for debugging/documentation only
+  int minValue;                       // valid raw byte range, taken from the widget's
+  int maxValue;                       // min/max in widget.ui (documentation, not enforced here)
+  std::function<void(uint8_t)> toUi;  // raw byte -> UI control
+  std::function<uint8_t()> fromUi;    // UI control -> raw byte
+  bool versionGatedSkip = false;      // left untouched on read when eeprom version byte == 0
+  bool hasLegacyDefault = false;      // forced to legacyDefault on read when eeprom version byte == 0
+  uint8_t legacyDefault = 0;
+};
 
-public:
-    Widget(QWidget *parent = nullptr);
-    ~Widget();
+class Widget : public QWidget {
+  Q_OBJECT
 
-private slots:
+ public:
+  Widget(QWidget *parent = nullptr);
+  ~Widget();
 
-    uint8_t mspSerialChecksumBuf(uint8_t checksum, const uint8_t *data, int len);
+ private slots:
 
-    void send_mspCommand(uint8_t cmd, QByteArray payload);
+  uint8_t mspSerialChecksumBuf(uint8_t checksum, const uint8_t *data, int len);
 
-    void on_sendButton_clicked();
+  void send_mspCommand(uint8_t cmd, QByteArray payload);
 
-    void on_disconnectButton_clicked();
+  void on_sendButton_clicked();
 
-    void on_pushButton_clicked();
+  void on_disconnectButton_clicked();
 
-    void on_sendMessageButton_clicked();
+  void on_pushButton_clicked();
 
-    void on_passthoughButton_clicked();
+  void on_sendMessageButton_clicked();
 
-    void on_horizontalSlider_sliderMoved(int position);
+  void on_passthoughButton_clicked();
 
-    void on_serialSelectorBox_currentTextChanged(const QString &arg1);
+  void on_horizontalSlider_sliderMoved(int position);
 
-   // void on_fourWaySendButton_clicked();
+  void on_serialSelectorBox_currentTextChanged(const QString &arg1);
 
-    void on_pushButton_2_clicked();
+  // void on_fourWaySendButton_clicked();
 
+  void on_pushButton_2_clicked();
 
-    void on_loadBinary_clicked();
+  void on_loadBinary_clicked();
 
-    void on_writeBinary_clicked();
+  void on_writeBinary_clicked();
 
-    void on_VerifyFlash_clicked();
+  void on_VerifyFlash_clicked();
 
-   // void on_sendMspComButton_clicked();
+  // void on_sendMspComButton_clicked();
 
-    void on_initMotor2_clicked();
+  void on_initMotor2_clicked();
 
-    void on_initMotor1_clicked();
+  void on_initMotor1_clicked();
 
-    void on_initMotor3_clicked();
+  void on_initMotor3_clicked();
 
-    void on_initMotor4_clicked();
+  void on_initMotor4_clicked();
 
-    void on_writeEEPROM_clicked();
+  void on_writeEEPROM_clicked();
 
-    void on_sendFirstEEPROM_clicked();
+  void on_sendFirstEEPROM_clicked();
 
-    void on_devSettings_stateChanged(int arg1);
+  void on_devSettings_stateChanged(int arg1);
 
-    void on_endPassthrough_clicked();
+  void on_endPassthrough_clicked();
 
-    QByteArray convertFromHex();
+  QByteArray convertFromHex();
 
-    void on_checkBox_stateChanged(int arg1);
+  void on_checkBox_stateChanged(int arg1);
 
-    void on_initMotor1_2_clicked();
+  void on_initMotor1_2_clicked();
 
-    void on_initMotor2_2_clicked();
+  void on_initMotor2_2_clicked();
 
-    void on_initMotor3_2_clicked();
+  void on_initMotor3_2_clicked();
 
-    void on_initMotor4_2_clicked();
+  void on_initMotor4_2_clicked();
 
-    void on_startupPowerSlider_valueChanged(int value);
+  void on_startupPowerSlider_valueChanged(int value);
 
-    void on_timingAdvanceSlider_valueChanged(int value);
+  void on_timingAdvanceSlider_valueChanged(int value);
 
-    void on_pwmFreqSlider_valueChanged(int value);
+  void on_pwmFreqSlider_valueChanged(int value);
 
-    void on_varPWMCheckBox_stateChanged(int arg1);
+  void on_varPWMCheckBox_stateChanged(int arg1);
 
-    void on_m1MSPSlider_valueChanged(int value);
+  void on_m1MSPSlider_valueChanged(int value);
 
-    void on_m2MSPSlider_valueChanged(int value);
+  void on_m2MSPSlider_valueChanged(int value);
 
-    void on_m3MSPSlider_valueChanged(int value);
+  void on_m3MSPSlider_valueChanged(int value);
 
-    void on_m4MSPSlider_valueChanged(int value);
+  void on_m4MSPSlider_valueChanged(int value);
 
-    void on_ConnectedButton_clicked();
+  void on_ConnectedButton_clicked();
 
-    void on_motorKVSlider_valueChanged(int value);
+  void on_motorKVSlider_valueChanged(int value);
 
-    void on_motorPolesSlider_valueChanged(int value);
+  void on_motorPolesSlider_valueChanged(int value);
 
   //  void on_beepVolumeSlider_sliderMoved(int position);
 
-    void on_beepVolumeSlider_valueChanged(int value);
+  void on_beepVolumeSlider_valueChanged(int value);
 
   //  void on_thirtymsTelemBox_stateChanged(int arg1);
 
-    void on_lowThresholdLineEdit_editingFinished();
+  void on_lowThresholdLineEdit_editingFinished();
 
-    void on_servoLowSlider_valueChanged(int value);
+  void on_servoLowSlider_valueChanged(int value);
 
-    void on_servoHighSlider_valueChanged(int value);
+  void on_servoHighSlider_valueChanged(int value);
 
-    void on_servoNeutralSlider_valueChanged(int value);
+  void on_servoNeutralSlider_valueChanged(int value);
 
-    void on_lowVoltageThresholdSlider_valueChanged(int value);
+  void on_lowVoltageThresholdSlider_valueChanged(int value);
 
-    void on_highThresholdLineEdit_editingFinished();
+  void on_highThresholdLineEdit_editingFinished();
 
-    void on_servoNeuralLineEdit_editingFinished();
+  void on_servoNeuralLineEdit_editingFinished();
 
-    void on_servoDeadBandSlider_valueChanged(int value);
+  void on_servoDeadBandSlider_valueChanged(int value);
 
-    void on_servoDeadbandLineEdit_editingFinished();
+  void on_servoDeadbandLineEdit_editingFinished();
 
-    void on_lowVoltageLineEdit_editingFinished();
+  void on_lowVoltageLineEdit_editingFinished();
 
-    void on_writeEEPROM_2_clicked();
+  void on_writeEEPROM_2_clicked();
 
-    void on_initMotor1_3_clicked();
+  void on_initMotor1_3_clicked();
 
-    void on_initMotor2_3_clicked();
+  void on_initMotor2_3_clicked();
 
-    void on_initMotor3_3_clicked();
+  void on_initMotor3_3_clicked();
 
-    void on_initMotor4_3_clicked();
+  void on_initMotor4_3_clicked();
 
-    void serialInfoStuff();
+  void serialInfoStuff();
 
-//   void on_serialSelectorBox_activated(const QString &arg1);
+  //   void on_serialSelectorBox_activated(const QString &arg1);
 
- //   void on_uploadMusic_clicked();
-    void resetESC();
+  //   void on_uploadMusic_clicked();
+  void resetESC();
 
-    void loadConfig();
+  void loadConfig();
 
-    void on_dragBrakeSlider_valueChanged(int value);
+  void on_dragBrakeSlider_valueChanged(int value);
 
-    void on_sineStartupSlider_valueChanged(int value);
+  void on_sineStartupSlider_valueChanged(int value);
 
-    void on_sineModePowerSlider_valueChanged(int value);
+  void on_sineModePowerSlider_valueChanged(int value);
 
-    void on_runningBrakeStrength_valueChanged(int value);
+  void on_runningBrakeStrength_valueChanged(int value);
 
-    void on_currentSlider_valueChanged(int value);
+  void on_currentSlider_valueChanged(int value);
 
-    void on_temperatureSlider_valueChanged(int value);
+  void on_temperatureSlider_valueChanged(int value);
 
-    void on_crawler_default_button_clicked();
+  void on_crawler_default_button_clicked();
 
-    void on_saveConfigButton_clicked();
+  void on_saveConfigButton_clicked();
 
-    void on_loadConfigButton_clicked();
+  void on_loadConfigButton_clicked();
 
-    void on_OfflineCheckBox_stateChanged(int arg1);
+  void on_OfflineCheckBox_stateChanged(int arg1);
 
-    void on_maxRocSlider_valueChanged(int value);
+  void on_maxRocSlider_valueChanged(int value);
 
-    void on_minDutySlider_valueChanged(int value);
+  void on_minDutySlider_valueChanged(int value);
 
-    void on_rocLineEdit_textEdited(const QString &arg1);
+  void on_rocLineEdit_textEdited(const QString &arg1);
 
-    void on_minDutyLineEdit_editingFinished();
+  void on_minDutyLineEdit_editingFinished();
 
-    void on_rocLineEdit_editingFinished();
+  void on_rocLineEdit_editingFinished();
 
-    void on_activeBrakeSlider_valueChanged(int value);
+  void on_activeBrakeSlider_valueChanged(int value);
 
-    void on_activeBrakeLineEdit_editingFinished();
+  void on_activeBrakeLineEdit_editingFinished();
 
-    void on_lowVoltageCuttoffBox_stateChanged(int arg1);
+  void on_lowVoltageCuttoffBox_stateChanged(int arg1);
 
-    void on_absoluteVotlageCheckbox_stateChanged(int arg1);
+  void on_absoluteVotlageCheckbox_stateChanged(int arg1);
 
-    void on_brakecheckbox_stateChanged(int arg1);
+  void on_brakecheckbox_stateChanged(int arg1);
 
-    void on_activeBrakeCheckbox_stateChanged(int arg1);
+  void on_activeBrakeCheckbox_stateChanged(int arg1);
 
-    void on_absoluteVoltageSlider_valueChanged(int value);
+  void on_absoluteVoltageSlider_valueChanged(int value);
 
-    void on_currentLimitPedit_editingFinished();
+  void on_currentLimitPedit_editingFinished();
 
-    void on_currentLimitDedit_editingFinished();
+  void on_currentLimitDedit_editingFinished();
 
-    void on_currentLimitIedit_editingFinished();
+  void on_currentLimitIedit_editingFinished();
 
-    void on_uploadMusic_clicked();
+  void on_uploadMusic_clicked();
 
-    void on_initMotor1_4_clicked();
+  void on_initMotor1_4_clicked();
 
-    void on_initMotor2_4_clicked();
+  void on_initMotor2_4_clicked();
 
-    void on_initMotor3_4_clicked();
+  void on_initMotor3_4_clicked();
 
-    void on_initMotor4_4_clicked();
+  void on_initMotor4_4_clicked();
 
-private:
+ private:
+  //    void initActionsConnections();
 
-//    void initActionsConnections();
+ private:
+  Ui::Widget *ui;
+  std::vector<EepromField> eepromFieldTable();
+  void applyBufferToUi(const QByteArray &buffer);
+  QByteArray buildBufferFromUi(const QByteArray &base);
+  void loadBinFile();
+  int getshift(int some_number);
+  void sendMSPThrottle();
+  void showSingleMotor(bool tf);
+  void connectSerial();
+  void hide4wayButtons(bool b);
+  void hideESCSettings(bool b);
+  void hideEEPROMSettings(bool b);
+  void allup();
+  bool connectMotor(uint8_t motor);
+  void sendFirstEeprom(uint8_t eeprom_type);
+  void closeSerialPort();
+  void readInitData();
+  void sendDirect(const QByteArray sendbuffer, uint16_t buffer_size, uint16_t address);
+  void readData();
+  void putData(const QByteArray &data);
+  void verifyFlash();
+  void writeData(const QByteArray &data);
+  void showStatusMessage(const QString &message);
+  bool getMusic();
+  bool writeMusic();
+  void endTimer();
+  typedef union __attribute__((packed)) {
+    uint8_t bytes[2];
+    uint16_t word;
+  } uint8_16_u;
+  enum messages {
+    ACK_OK,
+    BAD_ACK,
+    CRC_ERROR
 
-private:
-    Ui::Widget *ui;
-    void loadBinFile();
-    int  getshift(int some_number);
-    void sendMSPThrottle();
-    void showSingleMotor(bool tf);
-    void connectSerial();
-    void hide4wayButtons(bool b);
-    void hideESCSettings(bool b);
-    void hideEEPROMSettings(bool b);
-    void allup();
-    bool connectMotor(uint8_t motor);
-    void sendFirstEeprom(uint8_t eeprom_type);
-    void closeSerialPort();
-    void readInitData();
-    void sendDirect(const QByteArray sendbuffer, uint16_t buffer_size, uint16_t address);
-    void readData();
-    void putData(const QByteArray &data);
-    void verifyFlash();
-    void writeData(const QByteArray &data);
-    void showStatusMessage(const QString &message);
-    bool getMusic();
-    bool writeMusic();
-    void endTimer();
-    typedef union __attribute__ ((packed)) {
-        uint8_t bytes[2];
-        uint16_t word;
-    } uint8_16_u;
-    enum messages{
-        ACK_OK,
-        BAD_ACK,
-        CRC_ERROR
+  };
+  bool parseMSPMessage = true;
+  bool more_to_come = false;
+  bool timerdone = false;
 
-    };
-   bool parseMSPMessage = true;
-   bool more_to_come = false;
-   bool timerdone = false;
+  uint8_t retries = 0;
+  uint8_t max_retries = 16;
+  uint8_t number_of_ports = 0;
 
-   uint8_t retries = 0;
-   uint8_t max_retries = 16;
-   uint8_t number_of_ports = 0;
-
-//    typedef struct ioMem_s {
-//        uint8_t D_NUM_BYTES;
-//        uint8_t D_FLASH_ADDR_H;
-//        uint8_t D_FLASH_ADDR_L;
-//        uint8_t *D_PTR_I;
-//    } ioMem_t;
-private:
-    bool firstOffline = false;
-    FourWayIF *four_way = nullptr;
-    BF_ROOTLOADER *RL =nullptr;
-    OutConsole *msg_console = nullptr;
-    QSerialPort *m_serial = nullptr;
-    QLabel *statuslabel = nullptr;
-    QByteArray *input_buffer = nullptr;
-    QByteArray *bluejay_tune = nullptr;
-    QString filename;
-    QByteArray *eeprom_buffer = nullptr;
-    QByteArray *music_buffer = nullptr;
-    uint16_t eeprom_address = 0x7c00;
-    bool musicBufferFull = false;
-    int motor1throttle;
-    int motor2throttle;
-    int motor3throttle;
-    int motor4throttle;
- //   uint8_t output_bin_data[255] = {0};
+  //    typedef struct ioMem_s {
+  //        uint8_t D_NUM_BYTES;
+  //        uint8_t D_FLASH_ADDR_H;
+  //        uint8_t D_FLASH_ADDR_L;
+  //        uint8_t *D_PTR_I;
+  //    } ioMem_t;
+ private:
+  bool firstOffline = false;
+  FourWayIF *four_way = nullptr;
+  BF_ROOTLOADER *RL = nullptr;
+  OutConsole *msg_console = nullptr;
+  QSerialPort *m_serial = nullptr;
+  QLabel *statuslabel = nullptr;
+  QByteArray *input_buffer = nullptr;
+  QByteArray *bluejay_tune = nullptr;
+  QString filename;
+  QByteArray *eeprom_buffer = nullptr;
+  QByteArray *music_buffer = nullptr;
+  uint16_t eeprom_address = 0x7c00;
+  bool musicBufferFull = false;
+  int motor1throttle;
+  int motor2throttle;
+  int motor3throttle;
+  int motor4throttle;
+  //   uint8_t output_bin_data[255] = {0};
   //  QComboBox *m_box = nullptr;
 
- //   InConsole *rsp_console = nullptr;
-
-
+  //   InConsole *rsp_console = nullptr;
 };
-#endif // WIDGET_H
+#endif  // WIDGET_H
