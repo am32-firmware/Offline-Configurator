@@ -1,6 +1,6 @@
 #include "BF_ROOTLOADER.h"
 
-#include <QMessageBox>
+#include <QByteArray>
 
 typedef union __attribute__((packed)) {
   uint8_t bytes[2];
@@ -44,15 +44,17 @@ QByteArray BF_ROOTLOADER::setAddress(uint16_t address) {
 }
 
 QByteArray BF_ROOTLOADER::setBufferSize(uint16_t size) {
-  if (size == 256) {
-    size = 0;
-  }
+  // the bootloader reads a full 256-byte buffer from byte[2]==0x01;
+  // any other value takes the size from byte[3] (0..255). The 256 flag
+  // must go in byte[2], not byte[3], or a 256-byte write is seen as 0
+  uint8_t buf_hi = (size == 256) ? 0x01 : 0x00;
+  uint8_t buf_lo = (size == 256) ? 0x00 : (uint8_t)size;
 
   QByteArray output_to_esc_buffer;
   output_to_esc_buffer.append((char)0xfe);
   output_to_esc_buffer.append((char)0x00);
-  output_to_esc_buffer.append((char)0x00);
-  output_to_esc_buffer.append((char)(uint8_t)size);
+  output_to_esc_buffer.append((char)buf_hi);
+  output_to_esc_buffer.append((char)buf_lo);
   makeCRC(output_to_esc_buffer, 4);
   output_to_esc_buffer.append((char)calculated_crc_low_byte);
   output_to_esc_buffer.append((char)calculated_crc_high_byte);

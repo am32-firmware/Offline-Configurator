@@ -1,6 +1,7 @@
 QT += core gui
 QT += widgets
 QT += serialport
+QT += network
 
 CONFIG += c++11
 
@@ -25,8 +26,10 @@ SOURCES += \
     BF_ROOTLOADER.cpp \
     bluejaymelody.cpp \
     fourwayif.cpp \
+    hexfile.cpp \
     main.cpp \
     music.cpp \
+    sitltransport.cpp \
     widget.cpp
 
 HEADERS += \
@@ -34,7 +37,9 @@ HEADERS += \
     bluejaymelody.h \
     defaults.h \
     fourwayif.h \
+    hexfile.h \
     music.h \
+    sitltransport.h \
     widget.h
 
 FORMS += \
