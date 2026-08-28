@@ -65,3 +65,64 @@ bool validateFirmwareImage(const QByteArray &image, const FourWayIF &fw,
   }
   return true;
 }
+
+static bool parseTargetName(const QByteArray &block, QByteArray &name,
+                            QString *error, const QString &source) {
+  name.clear();
+  if (block.size() != 32) {
+    if (error)
+      *error = source + " target identity block is unavailable";
+    return false;
+  }
+  const int end = block.indexOf('\0');
+  if (end <= 0) {
+    if (error)
+      *error = source + " target identity is missing or unterminated";
+    return false;
+  }
+  name = block.left(end);
+  for (char byte : name) {
+    const uint8_t value = (uint8_t)byte;
+    if (value < 0x20 || value > 0x7e) {
+      if (error)
+        *error = source + " target identity contains invalid characters";
+      return false;
+    }
+  }
+  return true;
+}
+
+bool validateFirmwareTarget(const QByteArray &image, const FourWayIF &fw,
+                            const QByteArray &connectedFilename,
+                            QString *error) {
+  if (error)
+    error->clear();
+  const uint32_t offset = fw.filenameOffset();
+  if (offset == 0xffffffffu || offset > (uint32_t)image.size() ||
+      (uint32_t)image.size() - offset < 32u) {
+    if (error) {
+      *error = QString("firmware image does not contain its target identity "
+                       "at offset 0x%1")
+                   .arg(offset, 8, 16, QLatin1Char('0'));
+    }
+    return false;
+  }
+
+  QByteArray imageName;
+  QByteArray connectedName;
+  if (!parseTargetName(image.mid((int)offset, 32), imageName, error,
+                       "firmware image") ||
+      !parseTargetName(connectedFilename, connectedName, error,
+                       "connected ESC")) {
+    return false;
+  }
+  if (imageName != connectedName) {
+    if (error) {
+      *error = QString("firmware target mismatch (connected='%1' image='%2')")
+                   .arg(QString::fromLatin1(connectedName),
+                        QString::fromLatin1(imageName));
+    }
+    return false;
+  }
+  return true;
+}

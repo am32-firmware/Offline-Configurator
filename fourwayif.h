@@ -94,10 +94,11 @@ class FourWayIF {
   // obtained over a 4-way passthrough. Returns true if the block was valid.
   bool parseDevinfoBlock(const QByteArray &block);
 
-  // Validate a 4-way response (CRC + ACK byte at size-3). On a read response
-  // (0x3a) fills payloadOut with data[4] bytes from data[5..]; on a deviceInfo
-  // response (0x37) calls parseDeviceInfo. Sets ack_required/ack_type. Returns
-  // true on a complete, well-formed frame with a good ACK.
+  // Validate a 4-way response, including the command/address echoed by
+  // Betaflight. On a read response (0x3a) fills payloadOut with data[4] bytes
+  // from data[5..]; on a deviceInfo response (0x37) calls parseDeviceInfo.
+  // Sets ack_required/ack_type. Returns true only for the most recently built
+  // request's complete, well-formed frame with a good ACK.
   bool parseFourWayResponse(const QByteArray &resp, QByteArray &payloadOut);
 
   // Shifted targets cannot safely use legacy byte-address fallbacks. Both UI
@@ -121,6 +122,7 @@ class FourWayIF {
   // flash. firmwareImageFits() also accounts for final 8-byte padding.
   uint32_t applicationOffset() const;
   uint32_t eepromOffset() const;
+  uint32_t filenameOffset() const;
   uint32_t applicationCapacity() const;
   bool firmwareImageFits(uint32_t byteCount) const;
 
@@ -130,8 +132,12 @@ class FourWayIF {
   uint16_t tuneAddress() const;
 
  private:
+  void expectFourWayResponse(uint8_t command, uint16_t address);
   // parse deviceInfo bytes where deviceInfo[0] is at data[base]
   bool parseDeviceInfoAt(const QByteArray &data, int base);
+  bool response_expected;
+  uint8_t expected_command;
+  uint16_t expected_address;
   int testVar;
   char ack_req;
 };

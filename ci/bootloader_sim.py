@@ -327,12 +327,13 @@ class DirectServer:
 
 
 class FourWayFC:
-    def __init__(self, escs):
+    def __init__(self, escs, stale_write_ack=False):
         self.escs = escs
         self.selected = 0
         self.ep = PtyEndpoint()
         self.fourway = False
         self.buffer = b''
+        self.stale_write_ack = stale_write_ack
 
     def serve(self):
         while True:
@@ -435,6 +436,12 @@ class FourWayFC:
             return self.reply(command, address, data or [0],
                               ACK_OK if data is not None else ACK_GENERAL_ERROR)
         if command in (0x3B, 0x3E):
+            if self.stale_write_ack:
+                # Model a delayed ACK from the preceding same-shaped write.
+                # Do not perform this write: a client which fails to correlate
+                # the echoed address will advance and later fail readback.
+                self.stale_write_ack = False
+                return self.reply(command, address ^ 1, [0], ACK_OK)
             if esc.running or not params or esc.set_address(address) != GOOD_ACK:
                 return self.reply(command, address, [0], ACK_GENERAL_ERROR)
             esc.payload = bytes(params)
@@ -464,9 +471,12 @@ def main():
     parser.add_argument('--fail-eeprom-from', type=int, default=0)
     parser.add_argument('--no-echo', action='store_true')
     parser.add_argument('--corrupt-firmware-readback', action='store_true')
+    parser.add_argument('--stale-write-ack', action='store_true')
     args = parser.parse_args()
     if args.mixed_escs and args.mode != '4way':
         parser.error('--mixed-escs requires --mode 4way')
+    if args.stale_write_ack and args.mode != '4way':
+        parser.error('--stale-write-ack requires --mode 4way')
     if args.mode == 'direct':
         server = DirectServer(EscModel(
             args.generation, args.flash_size, nxp128=args.nxp128,
@@ -479,13 +489,14 @@ def main():
             EscModel('old', 64),
             EscModel('new', 128, nxp128=True),
             EscModel('old', 32),
-        ])
+        ], stale_write_ack=args.stale_write_ack)
     else:
         server = FourWayFC([EscModel(
             args.generation, args.flash_size, nxp128=args.nxp128,
             fail_eeprom_from=args.fail_eeprom_from,
             corrupt_firmware_readback=args.corrupt_firmware_readback)
-                            for _ in range(args.esc_count)])
+                            for _ in range(args.esc_count)],
+                           stale_write_ack=args.stale_write_ack)
     print(server.ep.path, flush=True)
     server.serve()
 

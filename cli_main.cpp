@@ -54,14 +54,25 @@ static void sendMsp(QSerialPort &sp, uint8_t cmd, const QByteArray &payload) {
 }
 
 // Read a complete response: wait for the first bytes then drain until idle.
-static QByteArray blockingRead(QSerialPort &sp, int idleMs = 200, int totalMs = 2000) {
+static QByteArray blockingRead(QSerialPort &sp, int idleMs = 200,
+                               int totalMs = 2000,
+                               bool stopAtFourWayFrame = false) {
   QByteArray buf;
   QElapsedTimer t;
   t.start();
   while (t.elapsed() < totalMs) {
-    if (sp.waitForReadyRead(idleMs))
+    if (sp.waitForReadyRead(idleMs)) {
       buf += sp.readAll();
-    else if (!buf.isEmpty())
+      if (stopAtFourWayFrame && buf.size() >= 5 &&
+          buf[0] == (char)0x2e) {
+        const int payloadSize = (uint8_t)buf[4] == 0
+                                    ? 256
+                                    : (uint8_t)buf[4];
+        const int frameSize = payloadSize + 8;
+        if (buf.size() >= frameSize)
+          return buf.left(frameSize);
+      }
+    } else if (!buf.isEmpty())
       break;  // got a message, then went idle => complete
   }
   return buf;
@@ -74,7 +85,7 @@ static bool fourWayTxn(QSerialPort &sp, FourWayIF &fw, const QByteArray &cmd,
     fw.ack_required = true;
     sp.write(cmd);
     sp.waitForBytesWritten(writeWaitMs);
-    QByteArray resp = blockingRead(sp);
+    QByteArray resp = blockingRead(sp, 200, 2000, true);
     if (fw.parseFourWayResponse(resp, payload))
       return true;
   }
@@ -425,6 +436,13 @@ static int flashConnected(QSerialPort &sp, FourWayIF &fw,
     return 3;
   }
 
+  const QByteArray connectedFilename = readFilename(sp, fw);
+  if (!validateFirmwareTarget(image, fw, connectedFilename,
+                              &validationError)) {
+    fprintf(stderr, "%s\n", qPrintable(validationError));
+    return 3;
+  }
+
   // Preserve the full EEPROM state covered by the bootloader, including the
   // tune and extended parameters. A short config-only write erases the rest
   // of the physical flash page on page-aligned MCUs.
@@ -523,6 +541,32 @@ static int cmdProtocolSelftest() {
   if (fw.parseFourWayResponse(malformed, payload))
     return 1;
 
+  // A CRC-valid response for a different address is stale and must not satisfy
+  // the current request. The expectation remains live so the correct reply can
+  // still complete the transaction.
+  auto makeReadResponse = [&](uint16_t address, uint8_t value) {
+    QByteArray response;
+    response.append((char)0x2e);
+    response.append((char)0x3a);
+    response.append((char)(address >> 8));
+    response.append((char)address);
+    response.append((char)1);
+    response.append((char)value);
+    response.append((char)0x00);
+    const uint16_t responseCrc = fw.makeCRC(response);
+    response.append((char)(responseCrc >> 8));
+    response.append((char)responseCrc);
+    return response;
+  };
+  fw.ack_required = true;
+  fw.makeFourWayReadCommand(1, 0x1234);
+  if (fw.parseFourWayResponse(makeReadResponse(0x1235, 0xaa), payload) ||
+      !fw.ack_required ||
+      !fw.parseFourWayResponse(makeReadResponse(0x1234, 0xbb), payload) ||
+      payload != QByteArray(1, (char)0xbb)) {
+    return 1;
+  }
+
   QByteArray badInfo("471\x14\x35\x06\x06\x03\xc1", 9);
   if (validDirectDeviceInfo(badInfo))
     return 1;
@@ -589,6 +633,25 @@ static int cmdProtocolSelftest() {
   oversized.replace(0, parsed.size(), parsed);
   if (validateFirmwareImage(oversized, target, true, 0x08001000u,
                             &validationError)) {
+    return 1;
+  }
+
+  QByteArray targetImage(64, (char)0xff);
+  targetImage.replace(0, parsed.size(), parsed);
+  target.devinfo_v3.filename_start = 0x1020;
+  const QByteArray targetName("TARGET_F051", 11);
+  targetImage.replace(32, targetName.size(), targetName);
+  targetImage[32 + targetName.size()] = '\0';
+  QByteArray connectedName(32, '\0');
+  connectedName.replace(0, targetName.size(), targetName);
+  if (!validateFirmwareTarget(targetImage, target, connectedName,
+                              &validationError)) {
+    return 1;
+  }
+  connectedName.replace(0, 5, "OTHER");
+  if (validateFirmwareTarget(targetImage, target, connectedName,
+                             &validationError) ||
+      !validationError.contains("target mismatch")) {
     return 1;
   }
   printf("PROTOCOL SELFTEST PASSED\n");

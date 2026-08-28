@@ -237,6 +237,7 @@ class Widget : public QWidget {
   void applyBufferToUi(const QByteArray &buffer);
   QByteArray buildBufferFromUi(const QByteArray &base);
   bool loadFirmwareImage(QByteArray &image, QString &error);
+  bool verifyFirmwareImage(const QByteArray &image, QString &error);
   void loadBinFile();
   int getshift(int some_number);
   void sendMSPThrottle();
@@ -263,7 +264,6 @@ class Widget : public QWidget {
                   uint16_t address);
   void readData();
   void putData(const QByteArray &data);
-  void verifyFlash();
   void writeData(const QByteArray &data);
   void showStatusMessage(const QString &message);
   bool getMusic();
@@ -279,6 +279,7 @@ class Widget : public QWidget {
     CRC_ERROR
 
   };
+  QByteArray connected_firmware_name;
   bool parseMSPMessage = true;
   bool more_to_come = false;
   bool timerdone = false;

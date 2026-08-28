@@ -17,19 +17,42 @@ def ihex_line(address, record_type, data):
     return ':' + (body + bytes([-sum(body) & 0xFF])).hex().upper()
 
 
-def make_hex(path, flash_kb):
+def make_hex(path, flash_kb, nxp128=False, target_name=None):
     start = 0x4000 if flash_kb == 128 else 0x1000
-    lines = [ihex_line(0, 4, b'\x08\x00')]
+    eeprom = 0x1E000 if nxp128 else {32: 0x7C00,
+                                     64: 0xF800,
+                                     128: 0x1F800}[flash_kb]
+    default_name = ('AM32_CITEST_NXP128' if nxp128 else
+                    {32: 'AM32_CITEST_F051',
+                     64: 'AM32_CITEST_L431',
+                     128: 'AM32_CITEST_G431'}[flash_kb])
+    name = (target_name or default_name).encode().ljust(32, b'\0')
+    filename_offset = 0x400 if flash_kb == 128 and not nxp128 \
+        else eeprom - start - 32
+
+    lines = []
+    upper = None
+
+    def emit(absolute, data):
+        nonlocal upper
+        for offset in range(0, len(data), 16):
+            address = absolute + offset
+            segment = address >> 16
+            if segment != upper:
+                upper = segment
+                lines.append(ihex_line(0, 4,
+                                       bytes([segment >> 8, segment & 0xFF])))
+            lines.append(ihex_line(address & 0xFFFF, 0,
+                                   data[offset:offset + 16]))
+
     image = bytearray((13 + index * 7) & 0xFF for index in range(4096))
     struct.pack_into('<II', image, 0, 0x20001000,
                      0x08000000 + start + 0x101)
-    if flash_kb == 128:
-        # DroneCAN's linker places .file_name 0x400 bytes after the vector
-        # region, rather than before EEPROM.
-        name = b'AM32_CITEST_G431_FLASHED'.ljust(32, b'\0')
-        image[0x400:0x420] = name
-    for offset in range(0, len(image), 16):
-        lines.append(ihex_line(start + offset, 0, image[offset:offset + 16]))
+    if filename_offset + 32 <= len(image):
+        image[filename_offset:filename_offset + 32] = name
+    emit(0x08000000 + start, image)
+    if filename_offset + 32 > len(image):
+        emit(0x08000000 + start + filename_offset, name)
     lines.append(ihex_line(0, 1, b''))
     with open(path, 'w', encoding='ascii') as output:
         output.write('\n'.join(lines) + '\n')
@@ -89,6 +112,8 @@ def main():
         for flash_kb in (32, 64, 128):
             firmware[flash_kb] = os.path.join(temp, 'fw_%uk.hex' % flash_kb)
             make_hex(firmware[flash_kb], flash_kb)
+        nxp_firmware = os.path.join(temp, 'fw_nxp128.hex')
+        make_hex(nxp_firmware, 128, nxp128=True)
 
         for mode in ('direct', '4way'):
             for generation in ('old', 'new'):
@@ -124,7 +149,7 @@ def main():
             label = '%-6s nxp %4uk' % (mode, 128)
             print('=== %s ===' % label, flush=True)
             started = time.time()
-            rc, output = run_cell(cli, mode, 'new', 128, firmware[128],
+            rc, output = run_cell(cli, mode, 'new', 128, nxp_firmware,
                                   ['--nxp128'])
             elapsed = time.time() - started
             passed = ('DIRECT SUITE PASSED' if mode == 'direct'
@@ -143,7 +168,7 @@ def main():
         label = 'direct no-echo'
         print('=== %s ===' % label, flush=True)
         started = time.time()
-        rc, output = run_cell(cli, 'direct', 'new', 64, firmware[64],
+        rc, output = run_cell(cli, 'direct', 'new', 128, firmware[128],
                               ['--no-echo'])
         elapsed = time.time() - started
         ok = rc == 0 and 'DIRECT SUITE PASSED' in output
@@ -151,6 +176,45 @@ def main():
             failed = True
             print(output)
         detail = 'suite passed' if ok else 'exit %d' % rc
+        print('--- %s: %s (%.1fs)' %
+              (label, 'OK' if ok else 'FAIL', elapsed), flush=True)
+        results.append((label, ok, detail, elapsed))
+
+        # Same-MCU images can have incompatible gate/pin maps. The embedded
+        # FILE_NAME must match the connected ESC before any flash safety write.
+        wrong_target = os.path.join(temp, 'fw_wrong_64k.hex')
+        make_hex(wrong_target, 64, target_name='AM32_WRONG_L431')
+        for mode in ('direct', '4way'):
+            label = '%-6s wrong-target' % mode
+            print('=== %s ===' % label, flush=True)
+            started = time.time()
+            rc, output = run_cell(cli, mode, 'new', 64, wrong_target)
+            elapsed = time.time() - started
+            ok = (rc == 3 and 'firmware target mismatch' in output and
+                  'flashed ' not in output)
+            if not ok:
+                failed = True
+                print(output)
+            detail = 'refused before flash' if ok else 'wrong image accepted'
+            print('--- %s: %s (%.1fs)' %
+                  (label, 'OK' if ok else 'FAIL', elapsed), flush=True)
+            results.append((label, ok, detail, elapsed))
+
+        # A valid delayed ACK for another address must be discarded and the
+        # original request retried rather than shifting the whole transaction
+        # stream by one response.
+        label = '4way stale-ack'
+        print('=== %s ===' % label, flush=True)
+        started = time.time()
+        rc, output = run_cell(cli, '4way', 'new', 64, firmware[64],
+                              ['--stale-write-ack'])
+        elapsed = time.time() - started
+        ok = (rc == 0 and 'FOURWAY SUITE PASSED' in output and
+              'stale/unexpected response' in output)
+        if not ok:
+            failed = True
+            print(output)
+        detail = 'stale reply discarded' if ok else 'stale reply accepted'
         print('--- %s: %s (%.1fs)' %
               (label, 'OK' if ok else 'FAIL', elapsed), flush=True)
         results.append((label, ok, detail, elapsed))
