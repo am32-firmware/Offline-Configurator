@@ -12,6 +12,33 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  protocol-matrix:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install Qt
+      uses: jurplel/install-qt-action@v4
+      with:
+        version: '6.6.2'
+        host: 'linux'
+        target: 'desktop'
+        arch: 'gcc_64'
+        modules: 'qtserialport'
+        cache: true
+
+    - name: Build protocol CLI
+      run: |
+        mkdir build-cli
+        cd build-cli
+        qmake ../SerialPortConnector_CLI.pro CONFIG+=release
+        make -j$(nproc)
+
+    - name: Run protocol matrix
+      run: python3 ci/run_matrix.py --cli build-cli/SerialPortConnector_CLI
+
   build-windows:
     runs-on: windows-latest
 

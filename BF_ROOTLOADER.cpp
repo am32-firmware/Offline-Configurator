@@ -44,15 +44,16 @@ QByteArray BF_ROOTLOADER::setAddress(uint16_t address) {
 }
 
 QByteArray BF_ROOTLOADER::setBufferSize(uint16_t size) {
-  if (size == 256) {
-    size = 0;
-  }
+  // A 256-byte buffer is encoded as 0x0100. Smaller buffers put their
+  // length in the low byte. This matches the bootloader's SET_BUFFER parser.
+  uint8_t size_high = size == 256 ? 1 : 0;
+  uint8_t size_low = size == 256 ? 0 : (uint8_t)size;
 
   QByteArray output_to_esc_buffer;
   output_to_esc_buffer.append((char)0xfe);
   output_to_esc_buffer.append((char)0x00);
-  output_to_esc_buffer.append((char)0x00);
-  output_to_esc_buffer.append((char)(uint8_t)size);
+  output_to_esc_buffer.append((char)size_high);
+  output_to_esc_buffer.append((char)size_low);
   makeCRC(output_to_esc_buffer, 4);
   output_to_esc_buffer.append((char)calculated_crc_low_byte);
   output_to_esc_buffer.append((char)calculated_crc_high_byte);
