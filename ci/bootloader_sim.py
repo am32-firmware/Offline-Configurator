@@ -26,12 +26,19 @@ DEVINFO_FLASH_OFFSET = 0x0D00
 
 FLASH_VARIANTS = {
     32: dict(size_code=0x1F, eeprom_offset=0x7C00, fw_start=0x1000,
-             shift=0, pin_code=0x14, file_name='AM32_CITEST_F051'),
+             shift=0, pin_code=0x14, page_size=0x400,
+             file_name='AM32_CITEST_F051'),
     64: dict(size_code=0x35, eeprom_offset=0xF800, fw_start=0x1000,
-             shift=0, pin_code=0x02, file_name='AM32_CITEST_L431'),
+             shift=0, pin_code=0x02, page_size=0x800,
+             file_name='AM32_CITEST_L431'),
     128: dict(size_code=0x2B, eeprom_offset=0x1F800, fw_start=0x4000,
-              shift=2, pin_code=0x14, file_name='AM32_CITEST_G431'),
+              shift=2, pin_code=0x14, page_size=0x800,
+              file_name='AM32_CITEST_G431'),
 }
+
+NXP128_VARIANT = dict(size_code=0x16, eeprom_offset=0x1E000,
+                      fw_start=0x4000, shift=2, pin_code=0x14,
+                      page_size=0x2000, file_name='AM32_CITEST_NXP128')
 
 
 def crc16_direct(data):
@@ -57,7 +64,7 @@ def crc16_xmodem(data):
 
 
 def default_settings(version):
-    data = bytearray(184)
+    data = bytearray(b'\xFF' * 1024)
     values = {
         0: 1, 1: 4, 2: version, 3: 2, 4: 18, 5: 32, 9: 100,
         10: 45, 12: 10, 20: 1, 21: 1, 22: 1, 23: 2, 24: 24,
@@ -66,25 +73,36 @@ def default_settings(version):
     }
     for offset, value in values.items():
         data[offset] = value
+    data[48:48 + 16] = b'CI_TUNE_PRESERVE'
+    data[177] = 37  # extended parameter beyond the 48-byte base config
     return bytes(data)
 
 
 class EscModel:
-    def __init__(self, generation, flash_kb, run_seconds=2.0):
-        variant = FLASH_VARIANTS[flash_kb]
+    def __init__(self, generation, flash_kb, run_seconds=2.0,
+                 nxp128=False, fail_eeprom_from=0):
+        variant = NXP128_VARIANT if nxp128 else FLASH_VARIANTS[flash_kb]
         self.generation = generation
         self.flash_size = flash_kb * 1024
         self.eeprom_add = MCU_FLASH_START + variant['eeprom_offset']
         self.app_add = MCU_FLASH_START + variant['fw_start']
         self.shift = variant['shift']
+        self.page_size = variant['page_size']
         self.pin_code = variant['pin_code']
         self.size_code = variant['size_code']
         self.version = 3 if generation == 'new' else 2
         self.run_seconds = run_seconds
+        self.fail_eeprom_from = fail_eeprom_from
+        self.eeprom_write_count = 0
         self.flash = bytearray(b'\xFF' * self.flash_size)
         self.store(variant['eeprom_offset'], default_settings(
             19 if generation == 'new' else 17))
-        self.store(variant['eeprom_offset'] - 32,
+        # v3 128k models a DroneCAN layout: filename is near the application,
+        # while the legacy magic filename address still maps to EEPROM-32.
+        self.filename_add = self.app_add + 0x400 \
+            if generation == 'new' and flash_kb == 128 and not nxp128 \
+            else self.eeprom_add - 32
+        self.store(self.filename_add - MCU_FLASH_START,
                    variant['file_name'].encode().ljust(32, b'\0'))
         if generation == 'new':
             self.store(DEVINFO_FLASH_OFFSET, self.devinfo_block())
@@ -110,13 +128,21 @@ class EscModel:
             '<II9sBBHHHH', DEVINFO_MAGIC1, DEVINFO_MAGIC2,
             self.device_info(), 27, self.shift,
             ((self.app_add - MCU_FLASH_START) >> self.shift) & 0xFFFF,
-            ((self.eeprom_add - 32) >> self.shift) & 0xFFFF,
+            ((self.filename_add - MCU_FLASH_START) >> self.shift) & 0xFFFF,
             ((self.eeprom_add - MCU_FLASH_START) >> self.shift) & 0xFFFF,
             ((self.eeprom_add - MCU_FLASH_START + 48) >> self.shift) & 0xFFFF)
 
     def run(self):
+        app_offset = self.app_add - MCU_FLASH_START
+        stack, entry = struct.unpack_from('<II', self.flash, app_offset)
+        if self.flash[self.eeprom_add - MCU_FLASH_START] != 1 or not (
+                0x20000000 <= stack <= 0x20010000 and
+                self.app_add <= entry <= self.app_add + 256 * 1024):
+            self.running_until = 0.0
+            return False
         self.running_until = time.time() + self.run_seconds
         self.address = 0
+        return True
 
     def set_address(self, address):
         if address == 0x20:
@@ -149,8 +175,19 @@ class EscModel:
         if offset + len(self.payload) > self.flash_size:
             return BAD_ACK
         data = bytearray(self.payload)
-        if self.address == self.eeprom_add and len(data) > 2:
-            data[2] = 19 if self.generation == 'new' else 17
+        if self.eeprom_add <= self.address < self.eeprom_add + 1024:
+            self.eeprom_write_count += 1
+            if (self.fail_eeprom_from and
+                    self.eeprom_write_count >= self.fail_eeprom_from):
+                return BAD_ACK
+        if self.address == self.eeprom_add:
+            if len(data) > 2:
+                data[2] = 19 if self.generation == 'new' else 17
+            # Real save_flash_nolib implementations erase the complete page
+            # when programming its aligned first address.
+            page_offset = offset - (offset % self.page_size)
+            self.flash[page_offset:page_offset + self.page_size] = \
+                b'\xFF' * self.page_size
         self.store(offset, data)
         return GOOD_ACK
 
@@ -412,11 +449,27 @@ def main():
     parser.add_argument('--flash-size', choices=[32, 64, 128], type=int,
                         required=True)
     parser.add_argument('--esc-count', choices=range(1, 9), type=int, default=4)
+    parser.add_argument('--nxp128', action='store_true')
+    parser.add_argument('--mixed-escs', action='store_true')
+    parser.add_argument('--fail-eeprom-from', type=int, default=0)
     args = parser.parse_args()
+    if args.mixed_escs and args.mode != '4way':
+        parser.error('--mixed-escs requires --mode 4way')
     if args.mode == 'direct':
-        server = DirectServer(EscModel(args.generation, args.flash_size))
+        server = DirectServer(EscModel(
+            args.generation, args.flash_size, nxp128=args.nxp128,
+            fail_eeprom_from=args.fail_eeprom_from))
+    elif args.mixed_escs:
+        server = FourWayFC([
+            EscModel('new', 128),
+            EscModel('old', 64),
+            EscModel('new', 128, nxp128=True),
+            EscModel('old', 32),
+        ])
     else:
-        server = FourWayFC([EscModel(args.generation, args.flash_size)
+        server = FourWayFC([EscModel(
+            args.generation, args.flash_size, nxp128=args.nxp128,
+            fail_eeprom_from=args.fail_eeprom_from)
                             for _ in range(args.esc_count)])
     print(server.ep.path, flush=True)
     server.serve()

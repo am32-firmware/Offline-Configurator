@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import struct
 
 CI_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -19,7 +20,14 @@ def ihex_line(address, record_type, data):
 def make_hex(path, flash_kb):
     start = 0x4000 if flash_kb == 128 else 0x1000
     lines = [ihex_line(0, 4, b'\x08\x00')]
-    image = bytes((13 + index * 7) & 0xFF for index in range(4096))
+    image = bytearray((13 + index * 7) & 0xFF for index in range(4096))
+    struct.pack_into('<II', image, 0, 0x20001000,
+                     0x08000000 + start + 0x101)
+    if flash_kb == 128:
+        # DroneCAN's linker places .file_name 0x400 bytes after the vector
+        # region, rather than before EEPROM.
+        name = b'AM32_CITEST_G431_FLASHED'.ljust(32, b'\0')
+        image[0x400:0x420] = name
     for offset in range(0, len(image), 16):
         lines.append(ihex_line(start + offset, 0, image[offset:offset + 16]))
     lines.append(ihex_line(0, 1, b''))
@@ -27,12 +35,14 @@ def make_hex(path, flash_kb):
         output.write('\n'.join(lines) + '\n')
 
 
-def run_cell(cli, mode, generation, flash_kb, firmware):
+def run_cell(cli, mode, generation, flash_kb, firmware, simulator_args=None):
     sim_command = [sys.executable, os.path.join(CI_DIR, 'bootloader_sim.py'),
                    '--mode', mode, '--generation', generation,
                    '--flash-size', str(flash_kb)]
     if mode == '4way':
         sim_command += ['--esc-count', '4']
+    if simulator_args:
+        sim_command += simulator_args
     simulator = subprocess.Popen(sim_command, stdout=subprocess.PIPE,
                                  stderr=subprocess.PIPE, text=True)
     try:
@@ -100,6 +110,68 @@ def main():
                     print('--- %s: %s (%.1fs)' %
                           (label, 'OK' if ok else 'FAIL', elapsed), flush=True)
                     results.append((label, ok, detail, elapsed))
+
+        # NXP 128k reports the distinct 0x16 flash code while retaining the
+        # shifted-address v3 layout. Cover it over both transports.
+        for mode in ('direct', '4way'):
+            label = '%-6s nxp %4uk' % (mode, 128)
+            print('=== %s ===' % label, flush=True)
+            started = time.time()
+            rc, output = run_cell(cli, mode, 'new', 128, firmware[128],
+                                  ['--nxp128'])
+            elapsed = time.time() - started
+            passed = ('DIRECT SUITE PASSED' if mode == 'direct'
+                      else 'FOURWAY SUITE PASSED')
+            ok = rc == 0 and passed in output
+            if not ok:
+                failed = True
+                print(output)
+            detail = 'suite passed' if ok else 'exit %d' % rc
+            print('--- %s: %s (%.1fs)' %
+                  (label, 'OK' if ok else 'FAIL', elapsed), flush=True)
+            results.append((label, ok, detail, elapsed))
+
+        # Reuse one FourWayIF while switching across heterogeneous ESCs. The
+        # old-protocol channels must not inherit v3 metadata from their peers.
+        label = '4way  mixed-esc'
+        print('=== %s ===' % label, flush=True)
+        started = time.time()
+        rc, output = run_cell(cli, '4way', 'new', 128, firmware[128],
+                              ['--mixed-escs'])
+        elapsed = time.time() - started
+        ok = (rc == 0 and 'FOURWAY SUITE PASSED' in output and
+              'ESC 2 discovered (v3=0 layout_known=1)' in output and
+              'ESC 4 discovered (v3=0 layout_known=1)' in output)
+        if not ok:
+            failed = True
+            print(output)
+        detail = 'state isolated' if ok else 'stale device state'
+        print('--- %s: %s (%.1fs)' %
+              (label, 'OK' if ok else 'FAIL', elapsed), flush=True)
+        results.append((label, ok, detail, elapsed))
+
+        # The settings-preservation write consumes four 256-byte writes. Force
+        # the first pre- and post-flash EEPROM chunks to fail and ensure the
+        # CLI returns an error instead of resetting/printing success.
+        for fail_from, phrase, stage in (
+                (5, 'pre-flash EEPROM safety write failed', 'pre-fail'),
+                (9, 'post-flash EEPROM write failed; ESC not reset',
+                 'post-fail')):
+            label = 'direct %-9s' % stage
+            print('=== %s ===' % label, flush=True)
+            started = time.time()
+            rc, output = run_cell(
+                cli, 'direct', 'new', 64, firmware[64],
+                ['--fail-eeprom-from', str(fail_from)])
+            elapsed = time.time() - started
+            ok = rc == 4 and phrase in output and 'FLASH SUCCESS' not in output
+            if not ok:
+                failed = True
+                print(output)
+            detail = 'failed closed' if ok else 'bad failure handling'
+            print('--- %s: %s (%.1fs)' %
+                  (label, 'OK' if ok else 'FAIL', elapsed), flush=True)
+            results.append((label, ok, detail, elapsed))
 
     print('\n%-18s %-6s %s' % ('cell', 'result', 'detail'))
     for label, ok, detail, elapsed in results:

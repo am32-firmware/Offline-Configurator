@@ -773,9 +773,12 @@ void Widget::on_writeBinary_clicked() {
       // APPLICATION_ADDRESS (e.g. the 16KB bootloader reservation on CAN
       // variants) is rejected with a bad ACK.
       uint16_t chunkAddr = four_way->firmwareChunkAddress(offset);
+      const uint8_t addressShift = four_way->devinfo_v3.enabled
+                                       ? four_way->devinfo_v3.address_shift
+                                       : (four_way->memory_divider_required_four ? 2 : 0);
       qInfo("flash write: firmware_start=0x%x offset=0x%x set_addr=0x%04x flash_addr=0x%08x",
             four_way->firmware_start, offset, chunkAddr,
-            0x08000000u + ((uint32_t)chunkAddr << four_way->devinfo_v3.address_shift));
+            0x08000000u + ((uint32_t)chunkAddr << addressShift));
       while (four_way->ack_required) {
         if (four_way->direct) {
           sendDirect(onetwentyeight, onetwentyeight.size(), chunkAddr);
@@ -1019,6 +1022,7 @@ void Widget::endTimer() {
 // thin wrappers over the shared FourWayIF address logic (see fourwayif.cpp)
 uint16_t Widget::eepromWriteAddress() { return four_way->eepromWriteAddress(); }
 uint16_t Widget::eepromReadAddress() { return four_way->eepromReadAddress(); }
+uint16_t Widget::filenameReadAddress() { return four_way->filenameReadAddress(); }
 
 bool Widget::connectMotor(uint8_t motor) {
   uint16_t buffer_length = 48;
@@ -1027,6 +1031,7 @@ bool Widget::connectMotor(uint8_t motor) {
   ui->escStatusLabel_2->setText("Connecting to ESC...");
   QApplication::processEvents();
 
+  four_way->resetDeviceState();
   four_way->ack_required = true;
   retries = 0;
   //   while(four_way->ack_required){
@@ -1088,46 +1093,46 @@ bool Widget::connectMotor(uint8_t motor) {
       }
     }
 
-    writeData(RL->setAddress(eepromReadAddress()));
-    m_serial->waitForBytesWritten(500);
-    while (m_serial->waitForReadyRead(500)) {
-    }
-
-    QByteArray data = m_serial->readAll();
-    if (data[data.size() - 1] == char(0x30)) {
-      qInfo("good ack !!!!");
-    } else {
-      return false;
-    }
-
-    writeData(RL->readFlash(48 + 32));
-    m_serial->waitForBytesWritten(200);
-    while (m_serial->waitForReadyRead(200)) {
-    }
-
-    QByteArray flash = m_serial->readAll();
-
-    qInfo("size of flash 1 : %d ", flash.size());
-    if (flash.size() == 87) {
-      flash.remove(0, 4);
-    }
-    qInfo("size of flash 2: %d ", flash.size());
-    if (flash[flash.size() - 1] == char(0x30)) {
-      qInfo("good ack read !!!!");
-    } else {
-      return false;
-    }
-    if (RL->checkCRC(flash, flash.size() - 1)) {  // last byte ack 0x30
-      qInfo("GOOD crc FROM ESC -- read");
-      hideESCSettings(false);
-      hideEEPROMSettings(false);
-      ui->sendFirstEEPROM->setHidden(false);
-      // ui->crawler_default_button->setHidden(false);
-      input_buffer->clear();
-      for (int i = 0; i < flash.size() - 2; i++) {
-        input_buffer->append(flash[i]);
+    // DroneCAN firmware stores its file name near the application rather than
+    // immediately before EEPROM. Read the two regions independently.
+    auto readDirectRegion = [&](uint16_t address, int size, QByteArray &out) {
+      writeData(RL->setAddress(address));
+      m_serial->waitForBytesWritten(500);
+      while (m_serial->waitForReadyRead(500)) {
       }
+      QByteArray setReply = m_serial->readAll();
+      if (setReply.isEmpty() || setReply[setReply.size() - 1] != char(0x30)) {
+        return false;
+      }
+
+      writeData(RL->readFlash((uint8_t)size));
+      m_serial->waitForBytesWritten(200);
+      while (m_serial->waitForReadyRead(200)) {
+      }
+      QByteArray reply = m_serial->readAll();
+      const int responseSize = size + 3;
+      if (reply.size() == responseSize + 4) {
+        reply.remove(0, 4);  // command echo from some direct adapters
+      }
+      if (reply.size() != responseSize ||
+          reply[responseSize - 1] != char(0x30) ||
+          !RL->checkCRC(reply, responseSize - 1)) {
+        return false;
+      }
+      out = reply.left(size);
+      return true;
+    };
+
+    QByteArray fileNameData;
+    QByteArray eepromData;
+    if (!readDirectRegion(filenameReadAddress(), 32, fileNameData) ||
+        !readDirectRegion(eepromReadAddress(), buffer_length, eepromData)) {
+      return false;
     }
+    *input_buffer = fileNameData + eepromData;
+    hideESCSettings(false);
+    hideEEPROMSettings(false);
+    ui->sendFirstEEPROM->setHidden(false);
 
   } else {
     four_way->ack_required = true;
@@ -1155,20 +1160,30 @@ bool Widget::connectMotor(uint8_t motor) {
     readData();
     four_way->parseDevinfoBlock(*input_buffer);
 
-    four_way->ack_required = true;
-    while (four_way->ack_required) {
-      writeData(four_way->makeFourWayReadCommand(buffer_length + 32,
-                                                 eepromReadAddress()));
-      m_serial->waitForBytesWritten(300);
-      while (m_serial->waitForReadyRead(300)) {
+    auto readFourWayRegion = [&](uint16_t address, int size, QByteArray &out) {
+      four_way->ack_required = true;
+      retries = 0;
+      while (four_way->ack_required) {
+        writeData(four_way->makeFourWayReadCommand(size, address));
+        m_serial->waitForBytesWritten(300);
+        while (m_serial->waitForReadyRead(300)) {
+        }
+        readData();
+        if (++retries > max_retries / 4) {
+          return false;
+        }
       }
-      qInfo("reads");
-      readData();
-      retries++;
-      if (retries > max_retries / 4) {
-        return false;
-      }
+      out = *input_buffer;
+      return out.size() == size;
+    };
+
+    QByteArray fileNameData;
+    QByteArray eepromData;
+    if (!readFourWayRegion(filenameReadAddress(), 32, fileNameData) ||
+        !readFourWayRegion(eepromReadAddress(), buffer_length, eepromData)) {
+      return false;
     }
+    *input_buffer = fileNameData + eepromData;
   }
 
   QString name;  // 2 bytes
@@ -1252,9 +1267,7 @@ bool Widget::connectMotor(uint8_t motor) {
       eeprom_buffer->append(input_buffer->at(i));
     }
     ui->escStatusLabel_2->setText("Connected");
-    if (!four_way->direct) {
-      getMusic();
-    }
+    getMusic();
     return true;
 
   } else {

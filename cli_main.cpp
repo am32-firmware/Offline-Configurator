@@ -5,8 +5,8 @@
   glue is CLI-local.
 
   Commands:
-    settings [port]            read + decode the 48-byte EEPROM, save settings.dat
-    flash <firmware.hex> [port] flash firmware, preserving/initialising the EEPROM
+    settings <port>             read + decode the 48-byte EEPROM, save settings.dat
+    flash <firmware.hex> <port> flash firmware, preserving/initialising the EEPROM
     direct-suite ...            CI exercise of the direct 1-wire protocol
     fourway-suite ...           CI exercise of 4-way discovery and protocol
 
@@ -26,10 +26,8 @@
 #include "fourwayif.h"
 #include "hexfile.h"
 
-static const char *DEFAULT_PORT =
-    "/dev/serial/by-id/usb-Betaflight_Betaflight_STM32H743_345D344E3139-if00";
-static const char *DEFAULT_HEX =
-    "/home/tridge/project/UAV/AM32/AM32/obj/AM32_ARK_G431_CAN_2.20.hex";
+static const int EEPROM_PRESERVE_SIZE = 1024;
+static const int PROTOCOL_CHUNK_SIZE = 256;
 
 // The suite commands select direct 19200-baud 1-wire operation. Existing
 // settings/flash commands retain their 115200-baud 4-way behaviour.
@@ -141,21 +139,27 @@ static bool directWrite(QSerialPort &sp, uint16_t address,
 }
 
 static bool directConnect(QSerialPort &sp, FourWayIF &fw) {
+  fw.resetDeviceState();
   static const char init[] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
                               0, 0x0d, 'B', 'L', 'H', 'e', 'l', 'i',
                               (char)0xf4, 0x7d};
   QByteArray info = directTxn(sp, QByteArray(init, sizeof(init)), 9);
-  if (info.size() != 9 || !fw.parseDeviceInfo(info, /*direct=*/true)) {
+  if (info.size() != 9) {
     fprintf(stderr, "no valid device info from direct bootloader (%d bytes: %s)\n",
             info.size(), info.toHex(' ').constData());
     return false;
   }
+  fw.parseDeviceInfo(info, /*direct=*/true);
   fw.direct = true;
 
   QByteArray devinfo = directRead(sp, 27, ADDRESS_MAGIC_DEVINFO);
   if (devinfo.size() == 27)
     fw.parseDevinfoBlock(devinfo);
 
+  if (!fw.flash_layout_known && !fw.devinfo_v3.enabled) {
+    fprintf(stderr, "unsupported flash layout and no v3 devinfo\n");
+    return false;
+  }
   if (fw.memory_divider_required_four && !fw.devinfo_v3.enabled) {
     fprintf(stderr, "128k direct targets need a v3 bootloader\n");
     return false;
@@ -187,6 +191,7 @@ static bool openSerial(QSerialPort &sp, const QString &port) {
 
 static bool connectFourWayTarget(QSerialPort &sp, FourWayIF &fw,
                                  uint8_t target) {
+  fw.resetDeviceState();
   fw.direct = false;
   fw.passthrough_started = true;
 
@@ -232,6 +237,10 @@ static bool connectFourWayTarget(QSerialPort &sp, FourWayIF &fw,
     printf("firmware_start=0x%04x divider=%d\n",
            fw.firmware_start, (int)fw.memory_divider_required_four);
   }
+  if (!fw.flash_layout_known && !fw.devinfo_v3.enabled) {
+    fprintf(stderr, "unsupported flash layout and no v3 devinfo\n");
+    return false;
+  }
   if (fw.memory_divider_required_four && !fw.devinfo_v3.enabled) {
     fprintf(stderr, "128k 4-way targets require v3 devinfo\n");
     return false;
@@ -264,31 +273,67 @@ static bool openAndConnect(QSerialPort &sp, FourWayIF &fw, const QString &port,
   return connectFourWayTarget(sp, fw, target);
 }
 
-// Read the 48-byte config (filename region + config read in one 80-byte read).
-static QByteArray readSettings(QSerialPort &sp, FourWayIF &fw) {
-  if (g_direct) {
-    QByteArray payload = directRead(sp, 80, fw.eepromReadAddress());
-    return payload.size() >= 80 ? payload.mid(32, 48) : QByteArray();
-  }
-  QByteArray payload;
-  for (int t = 0; t < 5; t++) {
-    if (fourWayTxn(sp, fw, fw.makeFourWayReadCommand(80, fw.eepromReadAddress()),
-                   payload, 300, 0) &&
-        payload.size() >= 80) {
-      payload.remove(0, 32);  // strip the 32-byte file-name region
-      return payload.left(48);
+static QByteArray readRegion(QSerialPort &sp, FourWayIF &fw,
+                             uint16_t firstAddress, int size,
+                             bool eepromRegion = false) {
+  QByteArray result;
+  while (result.size() < size) {
+    const int amount = qMin(PROTOCOL_CHUNK_SIZE, size - result.size());
+    const uint16_t address = result.isEmpty()
+                                 ? firstAddress
+                                 : (eepromRegion
+                                        ? fw.eepromChunkAddress(result.size())
+                                        : ADDRESS_MAGIC_CONTINUE);
+    QByteArray payload;
+    if (g_direct) {
+      payload = directRead(sp, amount, address);
+    } else if (!fourWayTxn(sp, fw, fw.makeFourWayReadCommand(amount, address),
+                           payload, 300, 4)) {
+      return QByteArray();
     }
+    if (payload.size() != amount) {
+      return QByteArray();
+    }
+    result += payload;
   }
-  return QByteArray();
+  return result;
 }
 
-static bool writeEeprom(QSerialPort &sp, FourWayIF &fw, const QByteArray &buf) {
-  if (g_direct)
-    return directWrite(sp, fw.eepromWriteAddress(), buf);
-  QByteArray payload;
-  return fourWayTxn(sp, fw,
-                    fw.makeFourWayWriteCommand(buf, buf.size(), fw.eepromWriteAddress()),
-                    payload, 500, 3);
+static QByteArray readSettings(QSerialPort &sp, FourWayIF &fw) {
+  return readRegion(sp, fw, fw.eepromReadAddress(), 48, true);
+}
+
+static QByteArray readFilename(QSerialPort &sp, FourWayIF &fw) {
+  return readRegion(sp, fw, fw.filenameReadAddress(), 32);
+}
+
+static QByteArray readEepromImage(QSerialPort &sp, FourWayIF &fw) {
+  return readRegion(sp, fw, fw.eepromReadAddress(), EEPROM_PRESERVE_SIZE, true);
+}
+
+static bool writeEepromImage(QSerialPort &sp, FourWayIF &fw,
+                             const QByteArray &image) {
+  if (image.size() != EEPROM_PRESERVE_SIZE) {
+    return false;
+  }
+  for (int offset = 0; offset < image.size(); offset += PROTOCOL_CHUNK_SIZE) {
+    const QByteArray chunk = image.mid(offset, PROTOCOL_CHUNK_SIZE);
+    const uint16_t address = offset == 0 ? fw.eepromWriteAddress()
+                                         : fw.eepromChunkAddress(offset);
+    bool ok;
+    if (g_direct) {
+      ok = directWrite(sp, address, chunk);
+    } else {
+      QByteArray payload;
+      ok = fourWayTxn(sp, fw,
+                      fw.makeFourWayWriteCommand(chunk, chunk.size(), address),
+                      payload, 500, 3);
+    }
+    if (!ok) {
+      return false;
+    }
+  }
+  return true;
 }
 
 static void printSettings(const QByteArray &c, const FourWayIF &fw) {
@@ -338,21 +383,28 @@ static int cmdSettings(const QString &port, uint8_t target) {
 
 static int flashConnected(QSerialPort &sp, FourWayIF &fw,
                           const QByteArray &image, uint8_t target) {
-  // choose the eeprom buffer: preserve a valid existing config, else defaults
-  QByteArray cfg = readSettings(sp, fw);
-  QByteArray eep;
-  if (cfg.size() == 48 && (uint8_t)cfg[0] == 0x01) {
-    eep = cfg;
-    printf("preserving existing settings\n");
+  // Preserve the full EEPROM state covered by the bootloader, including the
+  // tune and extended parameters. A short config-only write erases the rest
+  // of the physical flash page on page-aligned MCUs.
+  QByteArray eep = readEepromImage(sp, fw);
+  if (eep.size() != EEPROM_PRESERVE_SIZE) {
+    fprintf(stderr, "failed to read EEPROM preservation region\n");
+    return 4;
+  }
+  if ((uint8_t)eep[0] == 0x01) {
+    printf("preserving existing settings and tune\n");
   } else {
-    eep = QByteArray((const char *)air_starteeprom, 48);
+    eep.replace(0, 48, QByteArray((const char *)air_starteeprom, 48));
     printf("using default settings (eeprom was blank)\n");
   }
 
-  // pre-flash safety write: boot bit = 0 (best effort)
+  // Fail closed if the boot guard cannot be written.
   QByteArray e0 = eep;
   e0[0] = 0x00;
-  writeEeprom(sp, fw, e0);
+  if (!writeEepromImage(sp, fw, e0)) {
+    fprintf(stderr, "pre-flash EEPROM safety write failed\n");
+    return 4;
+  }
 
   // flash the image in 256-byte chunks; pad the final chunk to a multiple of
   // 8 with 0xFF (STM32 doubleword programming)
@@ -386,8 +438,9 @@ static int flashConnected(QSerialPort &sp, FourWayIF &fw,
   // post-flash write: boot bit = 1
   QByteArray e1 = eep;
   e1[0] = 0x01;
-  if (!writeEeprom(sp, fw, e1)) {
-    fprintf(stderr, "warning: post-flash eeprom write failed\n");
+  if (!writeEepromImage(sp, fw, e1)) {
+    fprintf(stderr, "post-flash EEPROM write failed; ESC not reset\n");
+    return 4;
   }
 
   // reset the ESC so the freshly-flashed firmware runs
@@ -462,11 +515,12 @@ static int cmdSuite(const QString &hexPath, const QString &port, bool direct) {
       return 3;
     }
     printf("4-way passthrough, %d ESC(s)\n", escCount);
+    FourWayIF found;
     for (int target = 0; target < escCount; target++) {
-      FourWayIF found;
       if (!connectFourWayTarget(sp, found, (uint8_t)target))
         return 5;
-      printf("ESC %d discovered\n", target + 1);
+      printf("ESC %d discovered (v3=%d layout_known=%d)\n", target + 1,
+             (int)found.devinfo_v3.enabled, (int)found.flash_layout_known);
     }
     // Discovery leaves the last channel selected; select motor one for the
     // destructive settings/flash part of the suite.
@@ -474,23 +528,23 @@ static int cmdSuite(const QString &hexPath, const QString &port, bool direct) {
       return 5;
   }
 
-  QByteArray before = readSettings(sp, fw);
-  if (before.size() != 48) {
-    fprintf(stderr, "failed to read settings\n");
+  QByteArray before = readEepromImage(sp, fw);
+  if (before.size() != EEPROM_PRESERVE_SIZE) {
+    fprintf(stderr, "failed to read EEPROM image\n");
     return 4;
   }
   QByteArray changed = before;
   changed[30] = (uint8_t)changed[30] == 5 ? 4 : 5;
-  if (!writeEeprom(sp, fw, changed)) {
+  if (!writeEepromImage(sp, fw, changed)) {
     fprintf(stderr, "settings write failed\n");
     return 4;
   }
-  QByteArray readback = readSettings(sp, fw);
+  QByteArray readback = readEepromImage(sp, fw);
   if (!settingsEqualExceptBootloaderVersion(changed, readback)) {
     fprintf(stderr, "settings write/readback mismatch\n");
     return 4;
   }
-  printf("settings write+readback ok\n");
+  printf("settings/tune preservation write+readback ok\n");
 
   int rc = flashConnected(sp, fw, image, 0);
   if (rc != 0)
@@ -505,14 +559,23 @@ static int cmdSuite(const QString &hexPath, const QString &port, bool direct) {
       fprintf(stderr, "post-flash direct reconnect failed\n");
       return 4;
     }
-    printf("DIRECT SUITE PASSED\n");
   } else {
     if (!connectFourWayTarget(sp, reconnected, 0)) {
       fprintf(stderr, "post-flash 4-way reconnect failed\n");
       return 4;
     }
-    printf("FOURWAY SUITE PASSED\n");
   }
+  QByteArray finalEeprom = readEepromImage(sp, reconnected);
+  if (!settingsEqualExceptBootloaderVersion(changed, finalEeprom)) {
+    fprintf(stderr, "EEPROM/tune changed during flash\n");
+    return 4;
+  }
+  QByteArray finalFilename = readFilename(sp, reconnected);
+  if (finalFilename.size() != 32 || !finalFilename.startsWith("AM32_")) {
+    fprintf(stderr, "firmware filename read from wrong address\n");
+    return 4;
+  }
+  printf(direct ? "DIRECT SUITE PASSED\n" : "FOURWAY SUITE PASSED\n");
   return 0;
 }
 
@@ -544,25 +607,31 @@ int main(int argc, char *argv[]) {
   if (args.size() < 2) {
     fprintf(stderr,
             "usage:\n"
-            "  %s [--target N] settings [port]\n"
-            "  %s [--target N] flash [firmware.hex] [port]\n"
+            "  %s [--target N] settings <port>\n"
+            "  %s [--target N] flash <firmware.hex> <port>\n"
             "  %s direct-suite <firmware.hex> <port>\n"
             "  %s fourway-suite <firmware.hex> <port>\n"
-            "    --target / -t  4-way ESC index (default 0 = motor 1)\n"
-            "defaults: port=%s\n          hex=%s\n",
+            "    --target / -t  4-way ESC index (default 0 = motor 1)\n",
             qPrintable(args[0]), qPrintable(args[0]), qPrintable(args[0]),
-            qPrintable(args[0]), DEFAULT_PORT, DEFAULT_HEX);
+            qPrintable(args[0]));
     return 1;
   }
 
   const QString cmd = args[1];
   if (cmd == "settings") {
-    QString port = args.size() > 2 ? args[2] : QString(DEFAULT_PORT);
-    return cmdSettings(port, target);
+    if (args.size() != 3) {
+      fprintf(stderr, "usage: %s [--target N] settings <port>\n",
+              qPrintable(args[0]));
+      return 1;
+    }
+    return cmdSettings(args[2], target);
   } else if (cmd == "flash") {
-    QString hex = args.size() > 2 ? args[2] : QString(DEFAULT_HEX);
-    QString port = args.size() > 3 ? args[3] : QString(DEFAULT_PORT);
-    return cmdFlash(hex, port, target);
+    if (args.size() != 4) {
+      fprintf(stderr, "usage: %s [--target N] flash <firmware.hex> <port>\n",
+              qPrintable(args[0]));
+      return 1;
+    }
+    return cmdFlash(args[2], args[3], target);
   } else if (cmd == "direct-suite" || cmd == "fourway-suite") {
     if (args.size() != 4) {
       fprintf(stderr, "usage: %s %s <firmware.hex> <port>\n",
