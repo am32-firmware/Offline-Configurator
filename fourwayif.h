@@ -15,6 +15,7 @@
 #define BOOTLOADER_PROTOCOL_FW_START 3    // deviceInfo carries firmware start
 #define ADDRESS_MAGIC_EEPROM 0x20         // maps to the EEPROM config region
 #define ADDRESS_MAGIC_FILE_NAME 0x21      // maps to the file-name region (EEPROM-32)
+#define ADDRESS_MAGIC_CONTINUE 0x22       // continues after the previous read
 #define ADDRESS_MAGIC_DEVINFO 0x23        // maps to the devinfo struct (magic1/2 + deviceInfo)
 
 // magic values at the start of the devinfo struct, used to confirm a 4-way
@@ -50,6 +51,7 @@ class FourWayIF {
   };
   DevinfoV3 devinfo_v3;
   uint8_t bootloader_version;  // protocol version from deviceInfo byte 8
+  bool flash_layout_known;
   bool checkCRC(const QByteArray data, uint16_t buffer_length);
   bool ACK_required();
   bool ACK_received();
@@ -81,6 +83,11 @@ class FourWayIF {
   // 21-byte echo. Returns true if the flash-size code was recognised.
   bool parseDeviceInfo(const QByteArray &data, bool direct);
 
+  // Clear all metadata belonging to the previously selected ESC. Call before
+  // each direct probe / 4-way InitFlash so a failed probe cannot retain the
+  // previous motor's v3 address layout.
+  void resetDeviceState();
+
   // Parse a devinfo block read from ADDRESS_MAGIC_DEVINFO: [magic1][magic2]
   // [deviceInfo...]. Validates the magic values, then parses the deviceInfo
   // (version + firmware_start), which is how the version/firmware-start are
@@ -93,10 +100,13 @@ class FourWayIF {
   // true on a good ACK.
   bool parseFourWayResponse(const QByteArray &resp, QByteArray &payloadOut);
 
-  // EEPROM region addresses, using the bootloader magic addresses when the
-  // protocol version supports them.
-  uint16_t eepromReadAddress() const;   // file-name region (EEPROM-32)
-  uint16_t eepromWriteAddress() const;  // EEPROM config region
+  // File-name and EEPROM are not contiguous on DroneCAN targets, so callers
+  // must read them separately. The offset helper is used when preserving the
+  // complete EEPROM image in several protocol-sized writes.
+  uint16_t filenameReadAddress() const;
+  uint16_t eepromReadAddress() const;
+  uint16_t eepromWriteAddress() const;
+  uint16_t eepromChunkAddress(uint32_t byteOffset) const;
 
   // Absolute client flash address for a firmware chunk at the given byte
   // offset, honouring the >>2 address shift on divider MCUs.

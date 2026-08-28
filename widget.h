@@ -250,6 +250,7 @@ class Widget : public QWidget {
   bool connectMotor(uint8_t motor);
   uint16_t eepromWriteAddress();
   uint16_t eepromReadAddress();
+  uint16_t filenameReadAddress();
   void sendFirstEeprom(uint8_t eeprom_type);
   void closeSerialPort();
   void readInitData();

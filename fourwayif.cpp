@@ -9,9 +9,18 @@ FourWayIF::FourWayIF() {
   ack_received = false;
   passthrough_started = false;
   ack_type = 1;
+  direct = false;
+  connected_motor = 0;
+  resetDeviceState();
+}
+
+void FourWayIF::resetDeviceState() {
   ESC_connected = false;
   bootloader_version = 0;
+  flash_layout_known = false;
+  eeprom_address = 0;
   firmware_start = 4096;  // pre-v3 byte offset; v3 fills devinfo_v3 instead
+  memory_divider_required_four = false;
   devinfo_v3 = {};        // all zero / enabled = false
 }
 
@@ -163,16 +172,21 @@ void FourWayIF::set_Ack_req(char ackreq) {
 }
 
 bool FourWayIF::ACK_received() {
+  return ack_received;
 }
 
 bool FourWayIF::parseDeviceInfo(const QByteArray &data, bool direct) {
   // 4-way responses carry a 2-byte [marker][cmd] prefix before the deviceInfo
   // payload; the direct path has none (and the caller already stripped the
   // 21-byte echo), so deviceInfo[k] lives at data[base + k].
+  resetDeviceState();
   return parseDeviceInfoAt(data, direct ? 0 : 2);
 }
 
 bool FourWayIF::parseDevinfoBlock(const QByteArray &block) {
+  // A failed v3 read must disable the previous target's extended layout while
+  // retaining the short deviceInfo defaults obtained by InitFlash.
+  devinfo_v3 = {};
   // block from ADDRESS_MAGIC_DEVINFO: magic1 (LE), magic2 (LE), deviceInfo...
   if (block.size() < 8 + 9) {
     return false;
@@ -215,12 +229,22 @@ bool FourWayIF::parseDevinfoBlock(const QByteArray &block) {
             length, (int)block.size());
       return known;
     }
+    const uint8_t addressShift = (uint8_t)block[v + 1];
+    const uint16_t firmwareStart = (uint8_t)block[v + 2] | ((uint8_t)block[v + 3] << 8);
+    const uint16_t filenameStart = (uint8_t)block[v + 4] | ((uint8_t)block[v + 5] << 8);
+    const uint16_t eepromStart = (uint8_t)block[v + 6] | ((uint8_t)block[v + 7] << 8);
+    const uint16_t tuneStart = (uint8_t)block[v + 8] | ((uint8_t)block[v + 9] << 8);
+    if (addressShift > 8 || firmwareStart < 1024 || filenameStart < 1024 ||
+        eepromStart < 1024 || tuneStart < 1024) {
+      qInfo("v3 devinfo: invalid address layout, ignoring");
+      return known;
+    }
     devinfo_v3.length = length;
-    devinfo_v3.address_shift = (uint8_t)block[v + 1];
-    devinfo_v3.firmware_start = (uint8_t)block[v + 2] | ((uint8_t)block[v + 3] << 8);
-    devinfo_v3.filename_start = (uint8_t)block[v + 4] | ((uint8_t)block[v + 5] << 8);
-    devinfo_v3.eeprom_start = (uint8_t)block[v + 6] | ((uint8_t)block[v + 7] << 8);
-    devinfo_v3.tune_start = (uint8_t)block[v + 8] | ((uint8_t)block[v + 9] << 8);
+    devinfo_v3.address_shift = addressShift;
+    devinfo_v3.firmware_start = firmwareStart;
+    devinfo_v3.filename_start = filenameStart;
+    devinfo_v3.eeprom_start = eepromStart;
+    devinfo_v3.tune_start = tuneStart;
     devinfo_v3.enabled = true;
     qInfo("v3 devinfo: len=%u shift=%u fw_start=0x%04x eeprom=0x%04x",
           devinfo_v3.length, devinfo_v3.address_shift,
@@ -267,6 +291,11 @@ bool FourWayIF::parseDeviceInfoAt(const QByteArray &data, int base) {
     memory_divider_required_four = false;
     eeprom_address = 0xE000;  // eeprom address of 64k-8k
     firmware_start = 16384;
+  } else if (flashcode == 0x16) {
+    qInfo("NXP 128K ESC_8KB_PAGE");
+    memory_divider_required_four = true;
+    eeprom_address = 0x7800;  // (128k-8k) >> 2
+    firmware_start = 16384;
   } else {
     qInfo("unknown flash size code 0x%02x", flashcode);
     known = false;
@@ -276,6 +305,7 @@ bool FourWayIF::parseDeviceInfoAt(const QByteArray &data, int base) {
   // 9-byte deviceInfo; it is read separately from ADDRESS_MAGIC_DEVINFO and
   // parsed in parseDevinfoBlock(). Here we only have the flash-size-code
   // defaults, used for pre-v3 bootloaders.
+  flash_layout_known = known;
   ESC_connected = true;
   return known;
 }
@@ -320,18 +350,36 @@ bool FourWayIF::parseFourWayResponse(const QByteArray &resp, QByteArray &payload
   return true;
 }
 
-uint16_t FourWayIF::eepromReadAddress() const {
+uint16_t FourWayIF::filenameReadAddress() const {
+  if (devinfo_v3.enabled) {
+    return devinfo_v3.filename_start;
+  }
   if (bootloader_version >= BOOTLOADER_PROTOCOL_MAGIC_ADDR) {
     return ADDRESS_MAGIC_FILE_NAME;
   }
   return eeprom_address - 32;
 }
 
-uint16_t FourWayIF::eepromWriteAddress() const {
+uint16_t FourWayIF::eepromReadAddress() const {
+  if (devinfo_v3.enabled) {
+    return devinfo_v3.eeprom_start;
+  }
   if (bootloader_version >= BOOTLOADER_PROTOCOL_MAGIC_ADDR) {
     return ADDRESS_MAGIC_EEPROM;
   }
   return eeprom_address;
+}
+
+uint16_t FourWayIF::eepromWriteAddress() const {
+  return eepromReadAddress();
+}
+
+uint16_t FourWayIF::eepromChunkAddress(uint32_t byteOffset) const {
+  const uint8_t shift = devinfo_v3.enabled ? devinfo_v3.address_shift
+                                           : (memory_divider_required_four ? 2 : 0);
+  const uint16_t start = devinfo_v3.enabled ? devinfo_v3.eeprom_start
+                                            : eeprom_address;
+  return (uint16_t)(start + (byteOffset >> shift));
 }
 
 uint16_t FourWayIF::tuneAddress() const {
