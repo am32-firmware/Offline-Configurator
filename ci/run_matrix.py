@@ -75,6 +75,13 @@ def main():
     if not os.path.isfile(cli):
         parser.error('CLI executable not found: ' + cli)
 
+    selftest = subprocess.run(
+        [cli, 'protocol-selftest'], stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT, text=True, timeout=10)
+    if selftest.returncode != 0 or 'PROTOCOL SELFTEST PASSED' not in selftest.stdout:
+        print(selftest.stdout)
+        return 1
+
     failed = False
     results = []
     with tempfile.TemporaryDirectory(prefix='offline-config-matrix-') as temp:
@@ -131,6 +138,23 @@ def main():
                   (label, 'OK' if ok else 'FAIL', elapsed), flush=True)
             results.append((label, ok, detail, elapsed))
 
+        # Not all 1-wire adapters echo commands. Exercise the same complete
+        # settings/flash/reconnect flow without transport echoing.
+        label = 'direct no-echo'
+        print('=== %s ===' % label, flush=True)
+        started = time.time()
+        rc, output = run_cell(cli, 'direct', 'new', 64, firmware[64],
+                              ['--no-echo'])
+        elapsed = time.time() - started
+        ok = rc == 0 and 'DIRECT SUITE PASSED' in output
+        if not ok:
+            failed = True
+            print(output)
+        detail = 'suite passed' if ok else 'exit %d' % rc
+        print('--- %s: %s (%.1fs)' %
+              (label, 'OK' if ok else 'FAIL', elapsed), flush=True)
+        results.append((label, ok, detail, elapsed))
+
         # Reuse one FourWayIF while switching across heterogeneous ESCs. The
         # old-protocol channels must not inherit v3 metadata from their peers.
         label = '4way  mixed-esc'
@@ -172,6 +196,23 @@ def main():
             print('--- %s: %s (%.1fs)' %
                   (label, 'OK' if ok else 'FAIL', elapsed), flush=True)
             results.append((label, ok, detail, elapsed))
+
+        label = 'direct verify-fail'
+        print('=== %s ===' % label, flush=True)
+        started = time.time()
+        rc, output = run_cell(
+            cli, 'direct', 'new', 64, firmware[64],
+            ['--corrupt-firmware-readback'])
+        elapsed = time.time() - started
+        phrase = 'firmware readback verification failed'
+        ok = rc == 4 and phrase in output and 'reset sent' not in output
+        if not ok:
+            failed = True
+            print(output)
+        detail = 'failed closed' if ok else 'bad verification handling'
+        print('--- %s: %s (%.1fs)' %
+              (label, 'OK' if ok else 'FAIL', elapsed), flush=True)
+        results.append((label, ok, detail, elapsed))
 
     print('\n%-18s %-6s %s' % ('cell', 'result', 'detail'))
     for label, ok, detail, elapsed in results:

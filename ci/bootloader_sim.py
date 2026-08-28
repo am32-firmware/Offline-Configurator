@@ -80,7 +80,8 @@ def default_settings(version):
 
 class EscModel:
     def __init__(self, generation, flash_kb, run_seconds=2.0,
-                 nxp128=False, fail_eeprom_from=0):
+                 nxp128=False, fail_eeprom_from=0,
+                 corrupt_firmware_readback=False):
         variant = NXP128_VARIANT if nxp128 else FLASH_VARIANTS[flash_kb]
         self.generation = generation
         self.flash_size = flash_kb * 1024
@@ -94,6 +95,8 @@ class EscModel:
         self.run_seconds = run_seconds
         self.fail_eeprom_from = fail_eeprom_from
         self.eeprom_write_count = 0
+        self.corrupt_firmware_readback = corrupt_firmware_readback
+        self.firmware_written = False
         self.flash = bytearray(b'\xFF' * self.flash_size)
         self.store(variant['eeprom_offset'], default_settings(
             19 if generation == 'new' else 17))
@@ -164,6 +167,9 @@ class EscModel:
             return None
         offset = self.address - MCU_FLASH_START
         data = bytes(self.flash[offset:offset + size]).ljust(size, b'\xFF')
+        if (self.corrupt_firmware_readback and self.firmware_written and
+                self.app_add <= self.address < self.eeprom_add and data):
+            data = bytes([data[0] ^ 1]) + data[1:]
         self.continue_address = self.address + size
         self.address = 0
         return data
@@ -189,6 +195,8 @@ class EscModel:
             self.flash[page_offset:page_offset + self.page_size] = \
                 b'\xFF' * self.page_size
         self.store(offset, data)
+        if self.app_add <= self.address < self.eeprom_add:
+            self.firmware_written = True
         return GOOD_ACK
 
 
@@ -212,8 +220,9 @@ class PtyEndpoint:
 class DirectServer:
     RUN_IDLE = 0.05
 
-    def __init__(self, esc):
+    def __init__(self, esc, echo=True):
         self.esc = esc
+        self.echo = echo
         self.ep = PtyEndpoint()
         self.buffer = b''
         self.last_rx = 0.0
@@ -224,13 +233,14 @@ class DirectServer:
             chunk = self.ep.read()
             now = time.time()
             if self.esc.running:
-                if chunk:
+                if chunk and self.echo:
                     self.ep.write(chunk)
                 self.buffer = b''
                 self.expect_payload = False
                 continue
             if chunk:
-                self.ep.write(chunk)
+                if self.echo:
+                    self.ep.write(chunk)
                 self.buffer += chunk
                 self.last_rx = now
             self.parse(now)
@@ -452,13 +462,17 @@ def main():
     parser.add_argument('--nxp128', action='store_true')
     parser.add_argument('--mixed-escs', action='store_true')
     parser.add_argument('--fail-eeprom-from', type=int, default=0)
+    parser.add_argument('--no-echo', action='store_true')
+    parser.add_argument('--corrupt-firmware-readback', action='store_true')
     args = parser.parse_args()
     if args.mixed_escs and args.mode != '4way':
         parser.error('--mixed-escs requires --mode 4way')
     if args.mode == 'direct':
         server = DirectServer(EscModel(
             args.generation, args.flash_size, nxp128=args.nxp128,
-            fail_eeprom_from=args.fail_eeprom_from))
+            fail_eeprom_from=args.fail_eeprom_from,
+            corrupt_firmware_readback=args.corrupt_firmware_readback),
+            echo=not args.no_echo)
     elif args.mixed_escs:
         server = FourWayFC([
             EscModel('new', 128),
@@ -469,7 +483,8 @@ def main():
     else:
         server = FourWayFC([EscModel(
             args.generation, args.flash_size, nxp128=args.nxp128,
-            fail_eeprom_from=args.fail_eeprom_from)
+            fail_eeprom_from=args.fail_eeprom_from,
+            corrupt_firmware_readback=args.corrupt_firmware_readback)
                             for _ in range(args.esc_count)])
     print(server.ep.path, flush=True)
     server.serve()

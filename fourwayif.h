@@ -97,8 +97,12 @@ class FourWayIF {
   // Validate a 4-way response (CRC + ACK byte at size-3). On a read response
   // (0x3a) fills payloadOut with data[4] bytes from data[5..]; on a deviceInfo
   // response (0x37) calls parseDeviceInfo. Sets ack_required/ack_type. Returns
-  // true on a good ACK.
+  // true on a complete, well-formed frame with a good ACK.
   bool parseFourWayResponse(const QByteArray &resp, QByteArray &payloadOut);
+
+  // Shifted targets cannot safely use legacy byte-address fallbacks. Both UI
+  // front ends must fail closed unless a v3 block supplied their addresses.
+  bool addressLayoutUsable() const;
 
   // File-name and EEPROM are not contiguous on DroneCAN targets, so callers
   // must read them separately. The offset helper is used when preserving the
