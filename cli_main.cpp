@@ -92,18 +92,30 @@ static QByteArray directTxn(QSerialPort &sp, const QByteArray &cmd, int replyLen
   QByteArray got;
   QElapsedTimer timer;
   timer.start();
-  const int wanted = cmd.size() + replyLen;
   while (timer.elapsed() < totalMs) {
-    if (sp.waitForReadyRead(200))
+    const bool ready = sp.waitForReadyRead(200);
+    if (ready)
       got += sp.readAll();
     // A prior no-reply command (notably direct RUN) can become readable only
     // after this transaction starts. Locate this command's echo instead of
     // assuming it is the first buffered byte.
     const int echo = got.indexOf(cmd);
-    if (echo >= 0 && got.size() >= echo + wanted)
+    if (echo >= 0 && got.size() >= echo + cmd.size() + replyLen)
       return got.mid(echo + cmd.size(), replyLen);
+    // Some 1-wire adapters do not echo transmitted commands.  Accept only an
+    // exact-sized bare reply so unrelated/stale serial bytes cannot be
+    // mistaken for the current transaction.
+    if (replyLen > 0 && !ready && got.size() == replyLen)
+      return got;
+    if (replyLen == 0 && !ready)
+      return QByteArray();
   }
   return QByteArray();
+}
+
+static bool validDirectDeviceInfo(const QByteArray &info) {
+  return info.size() == 9 && info[0] == '4' && info[1] == '7' &&
+         info[2] == '1' && (uint8_t)info[8] == 0x30;
 }
 
 static BF_ROOTLOADER g_rootloader;
@@ -144,7 +156,7 @@ static bool directConnect(QSerialPort &sp, FourWayIF &fw) {
                               0, 0x0d, 'B', 'L', 'H', 'e', 'l', 'i',
                               (char)0xf4, 0x7d};
   QByteArray info = directTxn(sp, QByteArray(init, sizeof(init)), 9);
-  if (info.size() != 9) {
+  if (!validDirectDeviceInfo(info)) {
     fprintf(stderr, "no valid device info from direct bootloader (%d bytes: %s)\n",
             info.size(), info.toHex(' ').constData());
     return false;
@@ -152,16 +164,14 @@ static bool directConnect(QSerialPort &sp, FourWayIF &fw) {
   fw.parseDeviceInfo(info, /*direct=*/true);
   fw.direct = true;
 
-  QByteArray devinfo = directRead(sp, 27, ADDRESS_MAGIC_DEVINFO);
-  if (devinfo.size() == 27)
+  QByteArray devinfo = directRead(sp, 64, ADDRESS_MAGIC_DEVINFO);
+  if (devinfo.size() >= 27)
     fw.parseDevinfoBlock(devinfo);
 
-  if (!fw.flash_layout_known && !fw.devinfo_v3.enabled) {
-    fprintf(stderr, "unsupported flash layout and no v3 devinfo\n");
-    return false;
-  }
-  if (fw.memory_divider_required_four && !fw.devinfo_v3.enabled) {
-    fprintf(stderr, "128k direct targets need a v3 bootloader\n");
+  if (!fw.addressLayoutUsable()) {
+    fprintf(stderr, fw.memory_divider_required_four
+                        ? "128k direct targets need a v3 bootloader\n"
+                        : "unsupported flash layout and no v3 devinfo\n");
     return false;
   }
   printf("connected (direct): bootloader_version=%u eeprom_address=0x%04x ",
@@ -213,9 +223,10 @@ static bool connectFourWayTarget(QSerialPort &sp, FourWayIF &fw,
   // struct via the magic address to get those. On older bootloaders this
   // read fails and we keep the flash-size-code defaults.
   QByteArray block;
-  // read the full v3 devinfo struct (magic1/2 + 9-byte deviceInfo + 9-byte
-  // v3 extension = 27 bytes); older bootloaders just return fewer bytes
-  if (fourWayTxn(sp, fw, fw.makeFourWayReadCommand(27, ADDRESS_MAGIC_DEVINFO),
+  // Read through the maximum supported v3 struct size so future extensions
+  // can be consumed without another transport change. Older bootloaders
+  // reject the magic address and retain the flash-size-code defaults.
+  if (fourWayTxn(sp, fw, fw.makeFourWayReadCommand(64, ADDRESS_MAGIC_DEVINFO),
                  block, 300, 2) &&
       fw.parseDevinfoBlock(block)) {
     printf(
@@ -237,12 +248,10 @@ static bool connectFourWayTarget(QSerialPort &sp, FourWayIF &fw,
     printf("firmware_start=0x%04x divider=%d\n",
            fw.firmware_start, (int)fw.memory_divider_required_four);
   }
-  if (!fw.flash_layout_known && !fw.devinfo_v3.enabled) {
-    fprintf(stderr, "unsupported flash layout and no v3 devinfo\n");
-    return false;
-  }
-  if (fw.memory_divider_required_four && !fw.devinfo_v3.enabled) {
-    fprintf(stderr, "128k 4-way targets require v3 devinfo\n");
+  if (!fw.addressLayoutUsable()) {
+    fprintf(stderr, fw.memory_divider_required_four
+                        ? "128k 4-way targets require v3 devinfo\n"
+                        : "unsupported flash layout and no v3 devinfo\n");
     return false;
   }
   return true;
@@ -309,6 +318,63 @@ static QByteArray readFilename(QSerialPort &sp, FourWayIF &fw) {
 
 static QByteArray readEepromImage(QSerialPort &sp, FourWayIF &fw) {
   return readRegion(sp, fw, fw.eepromReadAddress(), EEPROM_PRESERVE_SIZE, true);
+}
+
+static uint32_t readLe32(const QByteArray &data, int offset) {
+  return (uint8_t)data[offset] | ((uint8_t)data[offset + 1] << 8) |
+         ((uint8_t)data[offset + 2] << 16) |
+         ((uint32_t)(uint8_t)data[offset + 3] << 24);
+}
+
+static bool validateFirmwareImage(const QByteArray &image, const FourWayIF &fw) {
+  if (image.size() < 8) {
+    fprintf(stderr, "firmware image is too short to contain a vector table\n");
+    return false;
+  }
+  const uint32_t stack = readLe32(image, 0);
+  const uint32_t entry = readLe32(image, 4);
+  const uint8_t shift = fw.devinfo_v3.enabled
+                            ? fw.devinfo_v3.address_shift
+                            : (fw.memory_divider_required_four ? 2 : 0);
+  const uint32_t appOffset = fw.devinfo_v3.enabled
+                                 ? ((uint32_t)fw.devinfo_v3.firmware_start << shift)
+                                 : fw.firmware_start;
+  const uint32_t entryAddress = entry & ~1u;
+  const uint32_t entryOffset = entryAddress >= 0x08000000u
+                                   ? entryAddress - 0x08000000u
+                                   : entryAddress;
+  if (stack == 0 || stack == 0xffffffffu || (entry & 1u) == 0 ||
+      entryOffset < appOffset ||
+      entryOffset >= appOffset + (uint32_t)image.size()) {
+    fprintf(stderr,
+            "firmware vector table does not match target app start "
+            "(stack=0x%08x entry=0x%08x app=0x%08x size=%d)\n",
+            stack, entry, appOffset, image.size());
+    return false;
+  }
+  return true;
+}
+
+static bool verifyFirmwareImage(QSerialPort &sp, FourWayIF &fw,
+                                const QByteArray &image) {
+  const int chunkSize = 256;
+  for (int offset = 0; offset < image.size(); offset += chunkSize) {
+    QByteArray expected = image.mid(offset, chunkSize);
+    while ((expected.size() & 7) != 0)
+      expected.append((char)0xff);
+    QByteArray actual;
+    const uint16_t address = fw.firmwareChunkAddress(offset);
+    if (g_direct) {
+      actual = directRead(sp, expected.size(), address);
+    } else if (!fourWayTxn(sp, fw,
+                           fw.makeFourWayReadCommand(expected.size(), address),
+                           actual, 300, 3)) {
+      return false;
+    }
+    if (actual != expected)
+      return false;
+  }
+  return true;
 }
 
 static bool writeEepromImage(QSerialPort &sp, FourWayIF &fw,
@@ -383,6 +449,12 @@ static int cmdSettings(const QString &port, uint8_t target) {
 
 static int flashConnected(QSerialPort &sp, FourWayIF &fw,
                           const QByteArray &image, uint8_t target) {
+  // Reject a wrong-target/relocated image before clearing the boot bit.  This
+  // mirrors the bootloader's vector checks and also catches Intel HEX files
+  // whose record origin does not match this target's application address.
+  if (!validateFirmwareImage(image, fw))
+    return 3;
+
   // Preserve the full EEPROM state covered by the bootloader, including the
   // tune and extended parameters. A short config-only write erases the rest
   // of the physical flash page on page-aligned MCUs.
@@ -435,6 +507,14 @@ static int flashConnected(QSerialPort &sp, FourWayIF &fw,
   }
   printf("\n");
 
+  // Read every programmed byte back while the boot bit is still clear.  A
+  // mismatch leaves the ESC safely in its bootloader instead of claiming a
+  // successful flash and attempting to run a corrupt image.
+  if (!verifyFirmwareImage(sp, fw, image)) {
+    fprintf(stderr, "firmware readback verification failed\n");
+    return 4;
+  }
+
   // post-flash write: boot bit = 1
   QByteArray e1 = eep;
   e1[0] = 0x01;
@@ -454,7 +534,39 @@ static int flashConnected(QSerialPort &sp, FourWayIF &fw,
     blockingRead(sp);
   }
 
-  printf("FLASH SUCCESS\n");
+  printf("FLASH PROGRAMMED AND VERIFIED; reset sent (boot execution unverified)\n");
+  return 0;
+}
+
+static int cmdProtocolSelftest() {
+  FourWayIF fw;
+  QByteArray payload;
+  const QByteArray shortFrame("\x2e\x3a\x00", 3);
+  if (fw.parseFourWayResponse(shortFrame, payload))
+    return 1;
+
+  // Internally CRC-valid, but claims four payload bytes while carrying one.
+  QByteArray malformed("\x2e\x3a\x00\x00\x04\xaa\x00", 7);
+  const uint16_t crc = fw.makeCRC(malformed);
+  malformed.append((char)(crc >> 8));
+  malformed.append((char)crc);
+  if (fw.parseFourWayResponse(malformed, payload))
+    return 1;
+
+  QByteArray badInfo("471\x14\x35\x06\x06\x03\xc1", 9);
+  if (validDirectDeviceInfo(badInfo))
+    return 1;
+  QByteArray goodInfo("471\x14\x35\x06\x06\x03\x30", 9);
+  if (!validDirectDeviceInfo(goodInfo))
+    return 1;
+  fw.resetDeviceState();
+  fw.flash_layout_known = true;
+  if (!fw.addressLayoutUsable())
+    return 1;
+  fw.memory_divider_required_four = true;
+  if (fw.addressLayoutUsable())
+    return 1;
+  printf("PROTOCOL SELFTEST PASSED\n");
   return 0;
 }
 
@@ -611,14 +723,17 @@ int main(int argc, char *argv[]) {
             "  %s [--target N] flash <firmware.hex> <port>\n"
             "  %s direct-suite <firmware.hex> <port>\n"
             "  %s fourway-suite <firmware.hex> <port>\n"
+            "  %s protocol-selftest\n"
             "    --target / -t  4-way ESC index (default 0 = motor 1)\n",
             qPrintable(args[0]), qPrintable(args[0]), qPrintable(args[0]),
-            qPrintable(args[0]));
+            qPrintable(args[0]), qPrintable(args[0]));
     return 1;
   }
 
   const QString cmd = args[1];
-  if (cmd == "settings") {
+  if (cmd == "protocol-selftest") {
+    return args.size() == 2 ? cmdProtocolSelftest() : 1;
+  } else if (cmd == "settings") {
     if (args.size() != 3) {
       fprintf(stderr, "usage: %s [--target N] settings <port>\n",
               qPrintable(args[0]));

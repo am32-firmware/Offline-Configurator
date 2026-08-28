@@ -227,7 +227,7 @@ bool FourWayIF::parseDevinfoBlock(const QByteArray &block) {
         block.size() < length) {
       qInfo("v3 devinfo: invalid length=%u (got %d bytes), ignoring",
             length, (int)block.size());
-      return known;
+      return false;
     }
     const uint8_t addressShift = (uint8_t)block[v + 1];
     const uint16_t firmwareStart = (uint8_t)block[v + 2] | ((uint8_t)block[v + 3] << 8);
@@ -237,7 +237,7 @@ bool FourWayIF::parseDevinfoBlock(const QByteArray &block) {
     if (addressShift > 8 || firmwareStart < 1024 || filenameStart < 1024 ||
         eepromStart < 1024 || tuneStart < 1024) {
       qInfo("v3 devinfo: invalid address layout, ignoring");
-      return known;
+      return false;
     }
     devinfo_v3.length = length;
     devinfo_v3.address_shift = addressShift;
@@ -250,7 +250,10 @@ bool FourWayIF::parseDevinfoBlock(const QByteArray &block) {
           devinfo_v3.length, devinfo_v3.address_shift,
           devinfo_v3.firmware_start, devinfo_v3.eeprom_start);
   }
-  return known;
+  // A recognised legacy flash-size code is not enough here: callers use the
+  // return value to decide whether the extended address layout is available.
+  Q_UNUSED(known);
+  return devinfo_v3.enabled;
 }
 
 bool FourWayIF::parseDeviceInfoAt(const QByteArray &data, int base) {
@@ -312,7 +315,20 @@ bool FourWayIF::parseDeviceInfoAt(const QByteArray &data, int base) {
 
 bool FourWayIF::parseFourWayResponse(const QByteArray &resp, QByteArray &payloadOut) {
   payloadOut.clear();
-  if (resp.size() < 3) {
+  // Response framing is [0x2e, cmd, addr_hi, addr_lo, length, payload..., ACK,
+  // CRC_hi, CRC_lo].  Validate the complete frame before reading any indexed
+  // field.  A zero length byte is the protocol's 256-byte sentinel.
+  if (resp.size() < 8 || resp[0] != (char)0x2e) {
+    ack_type = FW_BAD_ACK;
+    return false;
+  }
+  int framePayloadLength = (uint8_t)resp[4];
+  if (framePayloadLength == 0) {
+    framePayloadLength = 256;
+  }
+  if (resp.size() != framePayloadLength + 8) {
+    qInfo("4WAY malformed response: length byte=%u, frame bytes=%d",
+          (uint8_t)resp[4], (int)resp.size());
     ack_type = FW_BAD_ACK;
     return false;
   }
@@ -336,18 +352,17 @@ bool FourWayIF::parseFourWayResponse(const QByteArray &resp, QByteArray &payload
     // The 4-way length sentinel uses 0 to encode 256 (same convention as
     // makeFourWayReadCommand). Decode it the same way here so 256-byte
     // reads aren't silently truncated to 0 bytes.
-    int payload_len = (uint8_t)resp[4];
-    if (payload_len == 0) {
-      payload_len = 256;
-    }
-    for (int i = 0; i < payload_len; i++) {
-      payloadOut.append(resp[i + 5]);
-    }
+    payloadOut = resp.mid(5, framePayloadLength);
   }
   if (resp[1] == (char)0x37) {  // deviceInfo response
     parseDeviceInfo(resp, false);
   }
   return true;
+}
+
+bool FourWayIF::addressLayoutUsable() const {
+  return (flash_layout_known || devinfo_v3.enabled) &&
+         (!memory_divider_required_four || devinfo_v3.enabled);
 }
 
 uint16_t FourWayIF::filenameReadAddress() const {

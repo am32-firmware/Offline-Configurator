@@ -9,6 +9,7 @@
 
 #include <QCheckBox>
 #include <QComboBox>
+#include <QElapsedTimer>
 #include <QFile>
 #include <QFileDialog>
 #include <QLineEdit>
@@ -459,13 +460,16 @@ void Widget::on_disconnectButton_clicked() {
 
 void Widget::readInitData() {
   QByteArray data = m_serial->readAll();
-  if (data.size() != 0) {
+  if (!data.isEmpty()) {
     qInfo("read data size next");
-    if (data.size() > 21) {
-      data.remove(0, 21);
-    }
+    // Direct adapters may echo the 21-byte init command. Keep only the
+    // trailing deviceInfo reply, then validate its signature and ACK before
+    // indexing or accepting target metadata.
+    if (data.size() >= 30)
+      data = data.right(9);
 
-    if (data[8] == (char)0x30) {
+    if (data.size() == 9 && data[0] == '4' && data[1] == '7' &&
+        data[2] == '1' && data[8] == (char)0x30) {
       // shared deviceInfo parsing (direct framing: echo already stripped above)
       four_way->parseDeviceInfo(data, /*direct=*/true);
       ui->escStatusLabel->setText("Connected");
@@ -475,6 +479,8 @@ void Widget::readInitData() {
       hideESCSettings(true);
       four_way->ESC_connected = false;
     }
+  } else {
+    four_way->ESC_connected = false;
   }
 }
 void Widget::readData() {
@@ -566,6 +572,118 @@ void Widget::readData() {
 }
 
 void Widget::writeData(const QByteArray &data) { m_serial->write(data); }
+
+QByteArray Widget::directReply(const QByteArray &command, int replySize,
+                               int idleMs, int totalMs) {
+  m_serial->readAll();
+  writeData(command);
+  m_serial->waitForBytesWritten(idleMs);
+
+  QByteArray response;
+  QElapsedTimer timer;
+  timer.start();
+  while (timer.elapsed() < totalMs) {
+    if (m_serial->waitForReadyRead(idleMs)) {
+      response += m_serial->readAll();
+    } else if (!response.isEmpty()) {
+      break;
+    }
+    if (response.startsWith(command) &&
+        response.size() >= command.size() + replySize) {
+      response.remove(0, command.size());
+      break;
+    }
+  }
+  return response.size() == replySize ? response : QByteArray();
+}
+
+bool Widget::readDirectRegion(uint16_t address, int size, QByteArray &out) {
+  out.clear();
+  if (size < 1 || size > 256)
+    return false;
+
+  const QByteArray addressReply = directReply(RL->setAddress(address), 1);
+  if (addressReply.size() != 1 || (uint8_t)addressReply[0] != 0x30)
+    return false;
+
+  const QByteArray command = RL->readFlash((uint8_t)(size & 0xff));
+  const QByteArray response = directReply(command, size + 3);
+  if (response.size() != size + 3 ||
+      (uint8_t)response[size + 2] != 0x30 ||
+      !RL->checkCRC(response.left(size + 2), size + 2)) {
+    return false;
+  }
+  out = response.left(size);
+  return true;
+}
+
+bool Widget::readEepromImage(QByteArray &out) {
+  static const int preserveSize = 1024;
+  static const int chunkSize = 256;
+  out.clear();
+  for (int offset = 0; offset < preserveSize; offset += chunkSize) {
+    QByteArray chunk;
+    const uint16_t address = offset == 0
+                                 ? eepromReadAddress()
+                                 : four_way->eepromChunkAddress(offset);
+    if (four_way->direct) {
+      if (!readDirectRegion(address, chunkSize, chunk))
+        return false;
+    } else {
+      four_way->ack_required = true;
+      input_buffer->clear();
+      writeData(four_way->makeFourWayReadCommand(chunkSize, address));
+      m_serial->waitForBytesWritten(500);
+      while (m_serial->waitForReadyRead(1000)) {
+      }
+      readData();
+      if (four_way->ack_required || input_buffer->size() != chunkSize)
+        return false;
+      chunk = *input_buffer;
+    }
+    out += chunk;
+  }
+  return out.size() == preserveSize;
+}
+
+bool Widget::writeEepromImage(const QByteArray &image) {
+  static const int preserveSize = 1024;
+  static const int chunkSize = 256;
+  if (image.size() != preserveSize)
+    return false;
+
+  for (int offset = 0; offset < preserveSize; offset += chunkSize) {
+    const QByteArray chunk = image.mid(offset, chunkSize);
+    const uint16_t address = offset == 0
+                                 ? eepromWriteAddress()
+                                 : four_way->eepromChunkAddress(offset);
+    four_way->ack_required = true;
+    if (four_way->direct) {
+      if (!sendDirect(chunk, chunk.size(), address))
+        return false;
+    } else {
+      writeData(four_way->makeFourWayWriteCommand(chunk, chunk.size(), address));
+      m_serial->waitForBytesWritten(500);
+      while (m_serial->waitForReadyRead(1000)) {
+      }
+      readData();
+      if (four_way->ack_required)
+        return false;
+    }
+  }
+  return true;
+}
+
+bool Widget::writeEepromPreserving(int offset,
+                                   const QByteArray &replacement) {
+  QByteArray image;
+  if (offset < 0 || replacement.isEmpty() ||
+      offset + replacement.size() > 1024 || !readEepromImage(image)) {
+    return false;
+  }
+  image.replace(offset, replacement.size(), replacement);
+  return writeEepromImage(image);
+}
 
 void Widget::on_sendMessageButton_clicked() {
   // const QByteArray data = ui->plainTextEdit->toPlainText().toLocal8Bit();
@@ -692,20 +810,8 @@ void Widget::on_writeBinary_clicked() {
     }
     eeprom_out[0] = 0x00;
 
-    if (four_way->direct) {
-      sendDirect(eeprom_out, 48, eepromWriteAddress());
-      chunk_size = 128;
-    } else {
-      writeData(four_way->makeFourWayWriteCommand(eeprom_out, 48,
-                                                  eepromWriteAddress()));
-      chunk_size = 256;
-      m_serial->waitForBytesWritten(500);
-      while (m_serial->waitForReadyRead(1000)) {
-      }
-
-      readData();
-    }
-    if (four_way->ack_required == false) {  // good ack received from esc
+    chunk_size = four_way->direct ? 128 : 256;
+    if (writeEepromPreserving(0, eeprom_out)) {
       ui->escStatusLabel->setText("WRITE EEPROM SUCCESSFUL");
     } else {
       ui->escStatusLabel->setText("Unable to set safety bit");
@@ -818,7 +924,6 @@ void Widget::on_writeBinary_clicked() {
       ui->progressBar->setValue((index * 100) / sizeofBin);
       QApplication::processEvents();
       if (index >= sizeofBin) {
-        ui->escStatusLabel_2->setText("FLASH SUCCESS");
         ui->progressBar->setValue(0);
         four_way->ack_required = true;
 
@@ -830,29 +935,23 @@ void Widget::on_writeBinary_clicked() {
           another_eeprom_out[00] = 0x01;
           if ((eeprom_buffer->at(1) < (char)0x03) || (eeprom_buffer->at(2) == char(0x00))) {  // no eeprom ever sent, will be set to zero at
                                                                                               // beggining of flash.
-            sendFirstEeprom(0);
+            if (!sendFirstEeprom(0)) {
+              ui->escStatusLabel_2->setText("EEPROM RESTORE FAILED");
+              return;
+            }
+            ui->escStatusLabel_2->setText("FLASH PROGRAMMED");
             resetESC();
             return;
           } else {
-            if (four_way->direct) {
-              sendDirect(another_eeprom_out, 48, eepromWriteAddress());
-
-            } else {
-              writeData(four_way->makeFourWayWriteCommand(
-                  another_eeprom_out, 48, eepromWriteAddress()));
-
-              m_serial->waitForBytesWritten(1000);
-              while (m_serial->waitForReadyRead(1000)) {
-              }
-              //  QByteArray data = m_serial->readAll();
-              //  four_way->ack_required = false;
-              readData();
+            if (!writeEepromPreserving(0, another_eeprom_out)) {
+              ui->escStatusLabel->setText("Unable to set safety bit");
+              return;
             }
           }
 
           if (four_way->ack_required == false) {  // good ack received from esc
             ui->escStatusLabel->setText("WRITE EEPROM SUCCESSFUL");
-            writeMusic();
+            ui->escStatusLabel_2->setText("FLASH PROGRAMMED");
             return;
           } else {
             ui->escStatusLabel->setText("Unable to set safety bit");
@@ -868,41 +967,21 @@ void Widget::on_writeBinary_clicked() {
 }
 
 bool Widget::getMusic() {
+  music_buffer->clear();
+  musicBufferFull = false;
   four_way->ack_required = true;
   if (four_way->direct) {
-    writeData(RL->setAddress(four_way->tuneAddress()));
-    m_serial->waitForBytesWritten(500);
-    while (m_serial->waitForReadyRead(500)) {
-    }
-    QByteArray data = m_serial->readAll();
-    if (data[data.size() - 1] == char(0x30)) {
-      qInfo("good ack !!!!");
-    } else {
+    QByteArray music;
+    if (!readDirectRegion(four_way->tuneAddress(), 128, music))
       return false;
-    }
-
-    writeData(RL->readFlash(128));
-    m_serial->waitForBytesWritten(500);
-    while (m_serial->waitForReadyRead(500)) {
-    }
-    QByteArray music = m_serial->readAll();
-    music.remove(0, 4);
-    //   qInfo("size of music : %d ", music.size());
-    if (music[music.size() - 1] == char(0x30)) {
-      qInfo("good ack read !!!!");
-    } else {
-      return false;
-    }
     if ((uint8_t)music.at(0) == 0xFF) {
       musicBufferFull = false;
     } else {
       musicBufferFull = true;
     }
-    music_buffer->clear();
-    for (int i = 0; i < music.size() - 2; i++) {
-      music_buffer->append(music[i]);
-    }
+    *music_buffer = music;
   } else {
+    input_buffer->clear();
     while (four_way->ack_required) {
       writeData(
           four_way->makeFourWayReadCommand(128, four_way->tuneAddress()));
@@ -912,6 +991,8 @@ bool Widget::getMusic() {
 
       readData();
     }
+    if (input_buffer->size() != 128)
+      return false;
     if ((uint8_t)input_buffer->at(0) == 0xFF) {
       musicBufferFull = false;
     } else {
@@ -925,34 +1006,14 @@ bool Widget::getMusic() {
 }
 
 bool Widget::writeMusic() {
-  if (musicBufferFull) {
-    QByteArray musicBufferOut;
-    for (int i = 0; i < 128; i++) {
-      musicBufferOut.append(music_buffer->at(i));
-    }
-    if (four_way->direct) {
-      sendDirect(musicBufferOut, 128, four_way->tuneAddress());
-
-    } else {
-      writeData(four_way->makeFourWayWriteCommand(
-          musicBufferOut, 128, four_way->tuneAddress()));
-
-      m_serial->waitForBytesWritten(500);
-      while (m_serial->waitForReadyRead(500)) {
-      }
-
-      readData();
-    }
-    if (four_way->ack_required == false) {  // good ack received from esc
-      ui->escStatusLabel->setText("WRITE EEPROM + SUCCESSFUL");
-
-      return true;
-    } else {
-      return false;
-    }
-  } else {
+  if (!musicBufferFull || music_buffer->size() < 128)
     return false;
-  }
+
+  const QByteArray musicBufferOut = music_buffer->left(128);
+  if (!writeEepromPreserving(48, musicBufferOut))
+    return false;
+  ui->escStatusLabel->setText("WRITE EEPROM + SUCCESSFUL");
+  return true;
 }
 
 void Widget::on_VerifyFlash_clicked() {
@@ -1061,68 +1122,19 @@ bool Widget::connectMotor(uint8_t motor) {
       builds (e.g. G431 CAN at 0x4000). Older bootloaders reject the
       read; we just leave devinfo_v3.enabled == false in that case.
      */
-    {
-      writeData(RL->setAddress(ADDRESS_MAGIC_DEVINFO));
-      m_serial->waitForBytesWritten(500);
-      while (m_serial->waitForReadyRead(500)) {
-      }
-      QByteArray sa = m_serial->readAll();
-      if (sa.size() && sa[sa.size() - 1] == char(0x30)) {
-        writeData(RL->readFlash(27));
-        m_serial->waitForBytesWritten(300);
-        while (m_serial->waitForReadyRead(300)) {
-        }
-        QByteArray rf = m_serial->readAll();
-        // expected: 27 payload + 2 CRC + 1 ACK = 30 bytes. Some adapters
-        // prepend a 4-byte echo of the command — same heuristic as the
-        // existing direct EEPROM read does for "== 87" further below.
-        // The CRC is computed by the ESC over data+CRC, so the prefix
-        // must be stripped BEFORE checkCRC, otherwise the CRC always
-        // fails on echoing adapters and devinfo_v3 stays disabled.
-        if (rf.size() == 34) {
-          rf.remove(0, 4);
-        }
-        if (rf.size() >= 30 && rf[rf.size() - 1] == char(0x30) &&
-            RL->checkCRC(rf, rf.size() - 1)) {
-          QByteArray block;
-          for (int i = 0; i < rf.size() - 3; i++) {
-            block.append(rf[i]);
-          }
-          four_way->parseDevinfoBlock(block);
-        }
-      }
+    QByteArray devinfoBlock;
+    if (readDirectRegion(ADDRESS_MAGIC_DEVINFO, 64, devinfoBlock))
+      four_way->parseDevinfoBlock(devinfoBlock);
+
+    if (!four_way->addressLayoutUsable()) {
+      ui->escStatusLabel->setText("Unsupported ESC address layout");
+      ui->escStatusLabel_2->setText("V3 bootloader required");
+      four_way->ESC_connected = false;
+      return false;
     }
 
     // DroneCAN firmware stores its file name near the application rather than
     // immediately before EEPROM. Read the two regions independently.
-    auto readDirectRegion = [&](uint16_t address, int size, QByteArray &out) {
-      writeData(RL->setAddress(address));
-      m_serial->waitForBytesWritten(500);
-      while (m_serial->waitForReadyRead(500)) {
-      }
-      QByteArray setReply = m_serial->readAll();
-      if (setReply.isEmpty() || setReply[setReply.size() - 1] != char(0x30)) {
-        return false;
-      }
-
-      writeData(RL->readFlash((uint8_t)size));
-      m_serial->waitForBytesWritten(200);
-      while (m_serial->waitForReadyRead(200)) {
-      }
-      QByteArray reply = m_serial->readAll();
-      const int responseSize = size + 3;
-      if (reply.size() == responseSize + 4) {
-        reply.remove(0, 4);  // command echo from some direct adapters
-      }
-      if (reply.size() != responseSize ||
-          reply[responseSize - 1] != char(0x30) ||
-          !RL->checkCRC(reply, responseSize - 1)) {
-        return false;
-      }
-      out = reply.left(size);
-      return true;
-    };
-
     QByteArray fileNameData;
     QByteArray eepromData;
     if (!readDirectRegion(filenameReadAddress(), 32, fileNameData) ||
@@ -1153,12 +1165,21 @@ bool Widget::connectMotor(uint8_t motor) {
     // full deviceInfo (protocol version + firmware start) via the magic read.
     // Older bootloaders reject this read and keep flash-size-code defaults.
     four_way->ack_required = true;
-    writeData(four_way->makeFourWayReadCommand(27, ADDRESS_MAGIC_DEVINFO));
+    writeData(four_way->makeFourWayReadCommand(64, ADDRESS_MAGIC_DEVINFO));
     m_serial->waitForBytesWritten(300);
     while (m_serial->waitForReadyRead(300)) {
     }
+    input_buffer->clear();
     readData();
-    four_way->parseDevinfoBlock(*input_buffer);
+    if (!four_way->ack_required)
+      four_way->parseDevinfoBlock(*input_buffer);
+
+    if (!four_way->addressLayoutUsable()) {
+      ui->escStatusLabel->setText("Unsupported ESC address layout");
+      ui->escStatusLabel_2->setText("V3 bootloader required");
+      four_way->ESC_connected = false;
+      return false;
+    }
 
     auto readFourWayRegion = [&](uint16_t address, int size, QByteArray &out) {
       four_way->ack_required = true;
@@ -1267,7 +1288,10 @@ bool Widget::connectMotor(uint8_t motor) {
       eeprom_buffer->append(input_buffer->at(i));
     }
     ui->escStatusLabel_2->setText("Connected");
-    getMusic();
+    if (!getMusic()) {
+      ui->escStatusLabel->setText("Unable to read tune data");
+      return false;
+    }
     return true;
 
   } else {
@@ -1453,72 +1477,45 @@ void Widget::on_initMotor4_clicked() {
   //  }
 }
 
-void Widget::sendDirect(const QByteArray sendbuffer, uint16_t buffer_size,
+bool Widget::sendDirect(const QByteArray sendbuffer, uint16_t buffer_size,
                         uint16_t address) {
-  writeData(RL->setAddress(address));  // set address
-  m_serial->waitForBytesWritten(10);
-  while (m_serial->waitForReadyRead(20)) {
-  }
-  QByteArray data = m_serial->readAll();
-  if (data[data.size() - 1] == char(0x30)) {
-    qInfo("good ADDRESS ack !!!!");
-  } else {
-    four_way->ack_type = BAD_ACK;
-    return;
-  }
-  writeData(RL->setBufferSize(buffer_size));  // set buffer size
-  m_serial->waitForBytesWritten(10);
-  while (m_serial->waitForReadyRead(20)) {
-  }
-  writeData(RL->sendBuffer(sendbuffer));  // send buffer
+  four_way->ack_required = true;
+  four_way->ack_type = BAD_ACK;
+
+  QByteArray reply = directReply(RL->setAddress(address), 1);
+  if (reply.size() != 1 || (uint8_t)reply[0] != 0x30)
+    return false;
+
+  // SET_BUFFER has no bootloader reply. Drain an optional adapter echo before
+  // sending the separately CRC-protected payload.
+  m_serial->readAll();
+  writeData(RL->setBufferSize(buffer_size));
   m_serial->waitForBytesWritten(20);
-  while (m_serial->waitForReadyRead(75)) {
+  while (m_serial->waitForReadyRead(20)) {
   }
-  QByteArray data2 = m_serial->readAll();
-  if (data2[data2.size() - 1] == char(0x30)) {
-    qInfo("good ack receive !!!!");
-  } else {
-    four_way->ack_type = BAD_ACK;
-    return;
-  }
-  writeData(RL->writeFlash());  // send write command
-  m_serial->waitForBytesWritten(10);
-  while (m_serial->waitForReadyRead(30)) {
-  }
-  QByteArray data3 = m_serial->readAll();
-  if (data3[data3.size() - 1] == char(0x30)) {
-    qInfo("good ack flash !!!!");
-    four_way->ack_required = false;
-    four_way->ack_type = ACK_OK;
-  } else {
-    four_way->ack_type = BAD_ACK;
-    return;
-  }
+  m_serial->readAll();
+
+  reply = directReply(RL->sendBuffer(sendbuffer), 1, 75, 2000);
+  if (reply.size() != 1 || (uint8_t)reply[0] != 0x30)
+    return false;
+
+  reply = directReply(RL->writeFlash(), 1, 100, 3000);
+  if (reply.size() != 1 || (uint8_t)reply[0] != 0x30)
+    return false;
+
+  four_way->ack_required = false;
+  four_way->ack_type = ACK_OK;
+  return true;
 }
 
 void Widget::on_writeEEPROM_2_clicked() { on_writeEEPROM_clicked(); }
 
 void Widget::on_writeEEPROM_clicked() {
-  four_way->ack_required = true;
   QByteArray eeprom_out = buildBufferFromUi(*eeprom_buffer);
-
-  if (four_way->direct) {
-    sendDirect(eeprom_out, 48, eepromWriteAddress());
+  if (writeEepromPreserving(0, eeprom_out)) {
     ui->escStatusLabel->setText("WRITE EEPROM SUCCESSFUL");
-
   } else {
-    writeData(four_way->makeFourWayWriteCommand(eeprom_out, 48,
-                                                eepromWriteAddress()));
-
-    m_serial->waitForBytesWritten(500);
-    while (m_serial->waitForReadyRead(500)) {
-    }
-
-    readData();
-    if (four_way->ack_required == false) {  // good ack received from esc
-      ui->escStatusLabel->setText("WRITE EEPROM SUCCESSFUL");
-      writeMusic();
-    }
+    ui->escStatusLabel->setText("WRITE EEPROM FAILED");
   }
 }
 
@@ -1546,7 +1543,7 @@ void Widget::hideEEPROMSettings(bool b) {
   //  qInfo(" slot working");
 }
 
-void Widget::sendFirstEeprom(uint8_t eeprom_type) {
+bool Widget::sendFirstEeprom(uint8_t eeprom_type) {
   QByteArray eeprom_out;
   if (eeprom_type == 0) {
     for (int i = 0; i < 48; i++) {
@@ -1558,24 +1555,15 @@ void Widget::sendFirstEeprom(uint8_t eeprom_type) {
       eeprom_out.append((char)crawler_starteeprom[i]);
     }
   }
-  four_way->ack_required = true;
-
-  if (four_way->direct) {
-    sendDirect(eeprom_out, 48, eepromWriteAddress());
-  } else {
-    writeData(four_way->makeFourWayWriteCommand(eeprom_out, 48,
-                                                eepromWriteAddress()));
-    m_serial->waitForBytesWritten(500);
-    while (m_serial->waitForReadyRead(500)) {
-    }
-
-    readData();
-  }
-  if (four_way->ack_required == false) {  // good ack received from esc
+  const bool success = writeEepromPreserving(0, eeprom_out);
+  if (success) {
     ui->escStatusLabel->setText("WRITE DEFAULT SUCCESS");
+  } else {
+    ui->escStatusLabel->setText("WRITE DEFAULT FAILED");
   }
   ui->eepromFrame->setHidden(true);
   ui->inputservoFrame->setHidden(true);
+  return success;
 }
 void Widget::on_sendFirstEEPROM_clicked() {
   sendFirstEeprom(0);
@@ -1890,23 +1878,10 @@ void Widget::on_uploadMusic_clicked() {
   while (eeprom_music_out.size() % 4 != 0)
     eeprom_music_out.append('\xFF');
 
-  uint16_t totalbuffersize = eeprom_music_out.size();
-  // qInfo(" totalbuffersize: %i", totalbuffersize);
-  four_way->ack_required = true;
-
-  if (four_way->direct) {
-    sendDirect(eeprom_music_out, totalbuffersize, eepromWriteAddress());
-  } else {
-    writeData(four_way->makeFourWayWriteCommand(eeprom_music_out, totalbuffersize,
-                                                eepromWriteAddress()));
-    m_serial->waitForBytesWritten(1500);
-    while (m_serial->waitForReadyRead(1500)) {
-    }
-
-    readData();
-  }
-  if (four_way->ack_required == false) {  // good ack received from esc
+  if (writeEepromPreserving(0, eeprom_music_out)) {
     ui->escStatusLabel->setText("WRITE DEFAULT SUCCESS");
+  } else {
+    ui->escStatusLabel->setText("WRITE DEFAULT FAILED");
   }
   ui->eepromFrame->setHidden(true);
   ui->inputservoFrame->setHidden(true);
