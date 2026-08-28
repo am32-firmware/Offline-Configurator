@@ -421,3 +421,26 @@ uint16_t FourWayIF::firmwareChunkAddress(uint32_t offset) const {
   }
   return (uint16_t)addr;
 }
+
+uint32_t FourWayIF::applicationOffset() const {
+  if (devinfo_v3.enabled)
+    return (uint32_t)devinfo_v3.firmware_start << devinfo_v3.address_shift;
+  return firmware_start;
+}
+
+uint32_t FourWayIF::eepromOffset() const {
+  if (devinfo_v3.enabled)
+    return (uint32_t)devinfo_v3.eeprom_start << devinfo_v3.address_shift;
+  return (uint32_t)eeprom_address << (memory_divider_required_four ? 2 : 0);
+}
+
+uint32_t FourWayIF::applicationCapacity() const {
+  const uint32_t app = applicationOffset();
+  const uint32_t eeprom = eepromOffset();
+  return eeprom > app ? eeprom - app : 0;
+}
+
+bool FourWayIF::firmwareImageFits(uint32_t byteCount) const {
+  const uint64_t padded = ((uint64_t)byteCount + 7u) & ~7ull;
+  return byteCount != 0 && padded <= applicationCapacity();
+}

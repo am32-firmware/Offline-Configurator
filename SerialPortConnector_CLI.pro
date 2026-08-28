@@ -14,12 +14,14 @@ DEFINES += QT_DEPRECATED_WARNINGS
 
 SOURCES += \
     BF_ROOTLOADER.cpp \
+    firmwarevalidation.cpp \
     fourwayif.cpp \
     hexfile.cpp \
     cli_main.cpp
 
 HEADERS += \
     BF_ROOTLOADER.h \
+    firmwarevalidation.h \
     fourwayif.h \
     hexfile.h \
     defaults.h

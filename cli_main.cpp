@@ -17,12 +17,14 @@
 #include <QElapsedTimer>
 #include <QFile>
 #include <QSerialPort>
+#include <QTemporaryFile>
 #include <QThread>
 #include <cstdint>
 #include <cstdio>
 
 #include "BF_ROOTLOADER.h"
 #include "defaults.h"
+#include "firmwarevalidation.h"
 #include "fourwayif.h"
 #include "hexfile.h"
 
@@ -320,41 +322,6 @@ static QByteArray readEepromImage(QSerialPort &sp, FourWayIF &fw) {
   return readRegion(sp, fw, fw.eepromReadAddress(), EEPROM_PRESERVE_SIZE, true);
 }
 
-static uint32_t readLe32(const QByteArray &data, int offset) {
-  return (uint8_t)data[offset] | ((uint8_t)data[offset + 1] << 8) |
-         ((uint8_t)data[offset + 2] << 16) |
-         ((uint32_t)(uint8_t)data[offset + 3] << 24);
-}
-
-static bool validateFirmwareImage(const QByteArray &image, const FourWayIF &fw) {
-  if (image.size() < 8) {
-    fprintf(stderr, "firmware image is too short to contain a vector table\n");
-    return false;
-  }
-  const uint32_t stack = readLe32(image, 0);
-  const uint32_t entry = readLe32(image, 4);
-  const uint8_t shift = fw.devinfo_v3.enabled
-                            ? fw.devinfo_v3.address_shift
-                            : (fw.memory_divider_required_four ? 2 : 0);
-  const uint32_t appOffset = fw.devinfo_v3.enabled
-                                 ? ((uint32_t)fw.devinfo_v3.firmware_start << shift)
-                                 : fw.firmware_start;
-  const uint32_t entryAddress = entry & ~1u;
-  const uint32_t entryOffset = entryAddress >= 0x08000000u
-                                   ? entryAddress - 0x08000000u
-                                   : entryAddress;
-  if (stack == 0 || stack == 0xffffffffu || (entry & 1u) == 0 ||
-      entryOffset < appOffset ||
-      entryOffset >= appOffset + (uint32_t)image.size()) {
-    fprintf(stderr,
-            "firmware vector table does not match target app start "
-            "(stack=0x%08x entry=0x%08x app=0x%08x size=%d)\n",
-            stack, entry, appOffset, image.size());
-    return false;
-  }
-  return true;
-}
-
 static bool verifyFirmwareImage(QSerialPort &sp, FourWayIF &fw,
                                 const QByteArray &image) {
   const int chunkSize = 256;
@@ -448,12 +415,15 @@ static int cmdSettings(const QString &port, uint8_t target) {
 }
 
 static int flashConnected(QSerialPort &sp, FourWayIF &fw,
-                          const QByteArray &image, uint8_t target) {
-  // Reject a wrong-target/relocated image before clearing the boot bit.  This
-  // mirrors the bootloader's vector checks and also catches Intel HEX files
-  // whose record origin does not match this target's application address.
-  if (!validateFirmwareImage(image, fw))
+                          const QByteArray &image, uint32_t imageOrigin,
+                          uint8_t target) {
+  // Reject a wrong-target, relocated, or oversized image before clearing the
+  // boot bit or writing any application/configuration flash.
+  QString validationError;
+  if (!validateFirmwareImage(image, fw, true, imageOrigin, &validationError)) {
+    fprintf(stderr, "%s\n", qPrintable(validationError));
     return 3;
+  }
 
   // Preserve the full EEPROM state covered by the bootloader, including the
   // tune and extended parameters. A short config-only write erases the rest
@@ -566,13 +536,69 @@ static int cmdProtocolSelftest() {
   fw.memory_divider_required_four = true;
   if (fw.addressLayoutUsable())
     return 1;
+
+  QTemporaryFile validHex;
+  if (!validHex.open())
+    return 1;
+  validHex.write(":020000040800F2\n"
+                 ":08100000001000200910000897\n"
+                 ":01101000AA35\n"
+                 ":00000001FF\n");
+  validHex.close();
+  QString hexError;
+  uint32_t origin = 0;
+  const QByteArray parsed = parseIntelHex(validHex.fileName(), &hexError, &origin);
+  if (!hexError.isEmpty() || parsed.size() != 17 ||
+      origin != 0x08001000u || (uint8_t)parsed[8] != 0xff ||
+      (uint8_t)parsed[15] != 0xff || (uint8_t)parsed[16] != 0xaa) {
+    return 1;
+  }
+
+  QTemporaryFile malformedHex;
+  if (!malformedHex.open())
+    return 1;
+  malformedHex.write(":01\n");
+  malformedHex.close();
+  if (!parseIntelHex(malformedHex.fileName(), &hexError, &origin).isEmpty() ||
+      hexError.isEmpty()) {
+    return 1;
+  }
+
+  FourWayIF target;
+  target.devinfo_v3.enabled = true;
+  target.devinfo_v3.address_shift = 0;
+  target.devinfo_v3.firmware_start = 0x1000;
+  target.devinfo_v3.eeprom_start = 0x7c00;
+  QString validationError;
+  if (!validateFirmwareImage(parsed, target, true, 0x08001000u,
+                             &validationError) ||
+      validateFirmwareImage(parsed, target, true, 0x08002000u,
+                            &validationError)) {
+    return 1;
+  }
+  QByteArray badStack = parsed;
+  badStack[0] = 0x00;
+  badStack[1] = 0x10;
+  badStack[2] = 0x00;
+  badStack[3] = 0x10;
+  if (validateFirmwareImage(badStack, target, true, 0x08001000u,
+                            &validationError)) {
+    return 1;
+  }
+  QByteArray oversized((int)target.applicationCapacity() + 1, (char)0xff);
+  oversized.replace(0, parsed.size(), parsed);
+  if (validateFirmwareImage(oversized, target, true, 0x08001000u,
+                            &validationError)) {
+    return 1;
+  }
   printf("PROTOCOL SELFTEST PASSED\n");
   return 0;
 }
 
 static int cmdFlash(const QString &hexPath, const QString &port, uint8_t target) {
   QString err;
-  QByteArray image = parseIntelHex(hexPath, &err);
+  uint32_t imageOrigin = 0;
+  QByteArray image = parseIntelHex(hexPath, &err, &imageOrigin);
   if (!err.isEmpty() || image.isEmpty()) {
     fprintf(stderr, "hex parse failed (%s): %s\n", qPrintable(hexPath),
             qPrintable(err.isEmpty() ? QString("empty image") : err));
@@ -587,7 +613,7 @@ static int cmdFlash(const QString &hexPath, const QString &port, uint8_t target)
   FourWayIF fw;
   if (!openAndConnect(sp, fw, port, target))
     return 2;
-  return flashConnected(sp, fw, image, target);
+  return flashConnected(sp, fw, image, imageOrigin, target);
 }
 
 static bool settingsEqualExceptBootloaderVersion(const QByteArray &a,
@@ -607,7 +633,8 @@ static bool settingsEqualExceptBootloaderVersion(const QByteArray &a,
 static int cmdSuite(const QString &hexPath, const QString &port, bool direct) {
   g_direct = direct;
   QString err;
-  QByteArray image = parseIntelHex(hexPath, &err);
+  uint32_t imageOrigin = 0;
+  QByteArray image = parseIntelHex(hexPath, &err, &imageOrigin);
   if (!err.isEmpty() || image.isEmpty()) {
     fprintf(stderr, "hex parse failed: %s\n", qPrintable(err));
     return 3;
@@ -658,7 +685,7 @@ static int cmdSuite(const QString &hexPath, const QString &port, bool direct) {
   }
   printf("settings/tune preservation write+readback ok\n");
 
-  int rc = flashConnected(sp, fw, image, 0);
+  int rc = flashConnected(sp, fw, image, imageOrigin, 0);
   if (rc != 0)
     return rc;
 

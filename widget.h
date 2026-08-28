@@ -91,8 +91,6 @@ class Widget : public QWidget {
 
   void on_endPassthrough_clicked();
 
-  QByteArray convertFromHex();
-
   void on_checkBox_stateChanged(int arg1);
 
   void on_initMotor1_2_clicked();
@@ -238,6 +236,7 @@ class Widget : public QWidget {
   std::vector<EepromField> eepromFieldTable();
   void applyBufferToUi(const QByteArray &buffer);
   QByteArray buildBufferFromUi(const QByteArray &base);
+  bool loadFirmwareImage(QByteArray &image, QString &error);
   void loadBinFile();
   int getshift(int some_number);
   void sendMSPThrottle();
