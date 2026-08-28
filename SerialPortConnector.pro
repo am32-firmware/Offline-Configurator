@@ -24,6 +24,7 @@ DEFINES += QT_DEPRECATED_WARNINGS
 SOURCES += \
     BF_ROOTLOADER.cpp \
     bluejaymelody.cpp \
+    firmwarevalidation.cpp \
     fourwayif.cpp \
     hexfile.cpp \
     main.cpp \
@@ -34,6 +35,7 @@ HEADERS += \
     BF_ROOTLOADER.h \
     bluejaymelody.h \
     defaults.h \
+    firmwarevalidation.h \
     fourwayif.h \
     hexfile.h \
     music.h \
@@ -46,5 +48,3 @@ FORMS += \
 qnx: target.path = /tmp/$${TARGET}/bin
 else: unix:!android: target.path = /opt/$${TARGET}/bin
 !isEmpty(target.path): INSTALLS += target
-
-

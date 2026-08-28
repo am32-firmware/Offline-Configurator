@@ -116,6 +116,14 @@ class FourWayIF {
   // offset, honouring the >>2 address shift on divider MCUs.
   uint16_t firmwareChunkAddress(uint32_t offset) const;
 
+  // Byte offsets from MCU flash base and the writable application capacity.
+  // The capacity stops at EEPROM so firmware can never consume configuration
+  // flash. firmwareImageFits() also accounts for final 8-byte padding.
+  uint32_t applicationOffset() const;
+  uint32_t eepromOffset() const;
+  uint32_t applicationCapacity() const;
+  bool firmwareImageFits(uint32_t byteCount) const;
+
   // CMD_SET_ADDRESS value for the music/tune region. With v3 we use the
   // bootloader-supplied tune_start; without v3 we fall back to
   // eeprom_address + 48 (which is only correct on non-shifted parts).
