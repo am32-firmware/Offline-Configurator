@@ -22,9 +22,19 @@ void FourWayIF::resetDeviceState() {
   firmware_start = 4096;  // pre-v3 byte offset; v3 fills devinfo_v3 instead
   memory_divider_required_four = false;
   devinfo_v3 = {};        // all zero / enabled = false
+  response_expected = false;
+  expected_command = 0;
+  expected_address = 0;
+}
+
+void FourWayIF::expectFourWayResponse(uint8_t command, uint16_t address) {
+  expected_command = command;
+  expected_address = address;
+  response_expected = true;
 }
 
 QByteArray FourWayIF::makeFourWayWriteCommand(const QByteArray sendbuffer, int buffer_size, uint16_t address) {
+  expectFourWayResponse(0x3b, address);
   if (buffer_size == 256) {
     buffer_size = 0;
   }
@@ -81,6 +91,7 @@ bool FourWayIF::checkCRC(const QByteArray data, uint16_t buffer_length) {
 }
 
 QByteArray FourWayIF::makeFourWayReadCommand(int buffer_size, uint16_t address) {
+  expectFourWayResponse(0x3a, address);
   if (buffer_size == 256) {
     buffer_size = 0;
   }
@@ -104,6 +115,7 @@ QByteArray FourWayIF::makeFourWayReadCommand(int buffer_size, uint16_t address) 
 }
 
 QByteArray FourWayIF::makeFourWayReadEEPROMCommand(int buffer_size, uint16_t address) {
+  expectFourWayResponse(0x3d, address);
   if (buffer_size == 256) {
     buffer_size = 0;
   }
@@ -143,6 +155,7 @@ uint16_t FourWayIF::makeCRC(const QByteArray data) {
 }
 
 QByteArray FourWayIF::makeFourWayCommand(uint8_t cmd, uint8_t device_num) {
+  expectFourWayResponse(cmd, 0);
   QByteArray fourWayMsgOut;
   fourWayMsgOut.append((char)0x2f);        // escape character PC
   fourWayMsgOut.append((char)cmd);         // 4 way command
@@ -337,6 +350,17 @@ bool FourWayIF::parseFourWayResponse(const QByteArray &resp, QByteArray &payload
     ack_type = FW_CRC_ERROR;
     return false;
   }
+  const uint16_t responseAddress = ((uint8_t)resp[2] << 8) |
+                                   (uint8_t)resp[3];
+  if (!response_expected || (uint8_t)resp[1] != expected_command ||
+      responseAddress != expected_address) {
+    qInfo("4WAY stale/unexpected response: cmd=0x%02x addr=0x%04x "
+          "expected_cmd=0x%02x expected_addr=0x%04x",
+          (uint8_t)resp[1], responseAddress, expected_command,
+          expected_address);
+    ack_type = FW_BAD_ACK;
+    return false;
+  }
   if (resp[resp.size() - 3] != (char)0x00) {  // ACK byte (0x00 == OK)
     qInfo("ACK ERROR: cmd=0x%02x ackcode=0x%02x", (uint8_t)resp[1],
           (uint8_t)resp[resp.size() - 3]);
@@ -345,6 +369,7 @@ bool FourWayIF::parseFourWayResponse(const QByteArray &resp, QByteArray &payload
   }
 
   // good ACK
+  response_expected = false;
   ack_required = false;
   ack_type = FW_ACK_OK;
 
@@ -432,6 +457,21 @@ uint32_t FourWayIF::eepromOffset() const {
   if (devinfo_v3.enabled)
     return (uint32_t)devinfo_v3.eeprom_start << devinfo_v3.address_shift;
   return (uint32_t)eeprom_address << (memory_divider_required_four ? 2 : 0);
+}
+
+uint32_t FourWayIF::filenameOffset() const {
+  const uint32_t app = applicationOffset();
+  uint32_t filename;
+  if (devinfo_v3.enabled) {
+    filename = (uint32_t)devinfo_v3.filename_start
+               << devinfo_v3.address_shift;
+  } else {
+    const uint32_t eeprom = eepromOffset();
+    if (eeprom < 32)
+      return 0xffffffffu;
+    filename = eeprom - 32;
+  }
+  return filename >= app ? filename - app : 0xffffffffu;
 }
 
 uint32_t FourWayIF::applicationCapacity() const {

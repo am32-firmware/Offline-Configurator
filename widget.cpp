@@ -523,10 +523,6 @@ void Widget::readData() {
             ui->escStatusLabel->setText("Connected");
           }
         } else {
-          if (data[1] == (char)0x37) {
-            hideESCSettings(true);
-            four_way->ESC_connected = false;
-          }
           if (data[1] == (char)0x3b) {
             qInfo("BAD ACK FROM ESC -- WRITE");
           }
@@ -798,7 +794,10 @@ bool Widget::loadFirmwareImage(QByteArray &image, QString &error) {
     error = "Firmware image is empty";
     return false;
   }
-  return validateFirmwareImage(image, *four_way, originKnown, origin, &error);
+  if (!validateFirmwareImage(image, *four_way, originKnown, origin, &error))
+    return false;
+  return validateFirmwareTarget(image, *four_way, connected_firmware_name,
+                                &error);
 }
 
 void Widget::resetESC() {
@@ -879,6 +878,13 @@ void Widget::on_writeBinary_clicked() {
     QApplication::processEvents();
   }
 
+  QString verifyError;
+  if (!verifyFirmwareImage(line, verifyError)) {
+    ui->StatusLabel->setText(verifyError);
+    ui->escStatusLabel_2->setText("FLASH VERIFY FAILURE");
+    return;
+  }
+
   ui->progressBar->setValue(0);
   if ((eeprom_buffer->at(1) < (char)0x03) ||
       (eeprom_buffer->at(2) == char(0x00))) {
@@ -951,23 +957,17 @@ bool Widget::writeMusic() {
   return true;
 }
 
-void Widget::on_VerifyFlash_clicked() {
-  QByteArray line;
-  QString loadError;
-  if (!loadFirmwareImage(line, loadError)) {
-    ui->StatusLabel->setText(loadError);
-    return;
-  }
-
-  const int binSize = line.size();
+bool Widget::verifyFirmwareImage(const QByteArray &image, QString &error) {
+  error.clear();
+  const int binSize = image.size();
   for (int offset = 0; offset < binSize; offset += 128) {
     const int amount = qMin(128, binSize - offset);
     QByteArray actual;
     if (four_way->direct) {
       if (!readDirectRegion(four_way->firmwareChunkAddress(offset), amount,
                             actual)) {
-        ui->StatusLabel->setText("Flash verification read failed");
-        return;
+        error = "Flash verification read failed";
+        return false;
       }
     } else {
       retries = 0;
@@ -982,18 +982,29 @@ void Widget::on_VerifyFlash_clicked() {
         readData();
       }
       if (four_way->ack_required || input_buffer->size() != amount) {
-        ui->StatusLabel->setText("Flash verification read failed");
-        return;
+        error = "Flash verification read failed";
+        return false;
       }
       actual = *input_buffer;
     }
-    if (actual != line.mid(offset, amount)) {
-      ui->StatusLabel->setText("Data error in flash memory");
-      return;
+    if (actual != image.mid(offset, amount)) {
+      error = "Data error in flash memory";
+      return false;
     }
     ui->progressBar->setValue(
         (int)((int64_t)(offset + amount) * 100 / binSize));
     QApplication::processEvents();
+  }
+  return true;
+}
+
+void Widget::on_VerifyFlash_clicked() {
+  QByteArray line;
+  QString error;
+  if (!loadFirmwareImage(line, error) ||
+      !verifyFirmwareImage(line, error)) {
+    ui->StatusLabel->setText(error);
+    return;
   }
   ui->StatusLabel->setText("Flash verification successful");
 }
@@ -1021,6 +1032,7 @@ uint16_t Widget::filenameReadAddress() { return four_way->filenameReadAddress();
 
 bool Widget::connectMotor(uint8_t motor) {
   uint16_t buffer_length = 48;
+  connected_firmware_name.clear();
 
   ui->escStatusLabel->setText("Connecting to ESC...");
   ui->escStatusLabel_2->setText("Connecting to ESC...");
@@ -1141,6 +1153,7 @@ bool Widget::connectMotor(uint8_t motor) {
     *input_buffer = fileNameData + eepromData;
   }
 
+  connected_firmware_name = input_buffer->left(32);
   QString name;  // 2 bytes
   name.append(QChar(input_buffer->at(0)));
   name.append(QChar(input_buffer->at(1)));
