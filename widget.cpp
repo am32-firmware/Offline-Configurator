@@ -1168,7 +1168,9 @@ bool Widget::connectMotor(uint8_t motor) {
       ui->escStatusLabel_2->setText("Can Not Connect");
       return false;
     }
-    writeData(RL->setAddress(four_way->eeprom_address - 32));
+    writeData(RL->setAddress(
+        four_way->eeprom_address -
+        (four_way->memory_divider_required_four ? 8 : 32)));
     m_serial->waitForBytesWritten(500);
     while (m_serial->waitForReadyRead(500)) {
     }
@@ -1226,8 +1228,9 @@ bool Widget::connectMotor(uint8_t motor) {
 
     four_way->ack_required = true;
     while (four_way->ack_required) {
-      writeData(four_way->makeFourWayReadCommand(buffer_length + 32,
-                                                 four_way->eeprom_address - 32));
+      writeData(four_way->makeFourWayReadCommand(
+          buffer_length + 32, four_way->eeprom_address -
+              (four_way->memory_divider_required_four ? 8 : 32)));
       m_serial->waitForBytesWritten(300);
       while (m_serial->waitForReadyRead(300)) {
       }
