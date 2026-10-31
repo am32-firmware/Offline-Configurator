@@ -217,7 +217,7 @@ std::vector<EepromField> Widget::eepromFieldTable() {
   // Fields 36-46 (eeprom version 0x01+): left untouched on read when talking
   // to a device still on eeprom version 0 (matches original behavior).
   {
-    EepromField lowVCutoff = makeCheckboxField(36, "lowVoltageCutoff", ui->lowVoltageCuttoffBox);
+    EepromField lowVCutoff = makeExclusiveCheckboxField(36, "lowVoltageCutoff", ui->lowVoltageCuttoffBox, ui->absoluteVotlageCheckbox);
     lowVCutoff.versionGatedSkip = true;
     f.push_back(lowVCutoff);
 
