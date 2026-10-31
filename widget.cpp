@@ -33,7 +33,7 @@ Widget::Widget(QWidget *parent)
   ui->setupUi(this);
   // ui->tabWidget->removeTab(4); // todo make these visible
   ui->tabWidget->removeTab(5);  // remove led tab for now
-  this->setWindowTitle("ESC Config Tool 1.97 - For firmware version 2.21 and higher");
+  this->setWindowTitle("ESC Config Tool 1.98 - For firmware version 2.21 and higher");
 
   serialInfoStuff();
 
@@ -217,7 +217,7 @@ std::vector<EepromField> Widget::eepromFieldTable() {
   // Fields 36-46 (eeprom version 0x01+): left untouched on read when talking
   // to a device still on eeprom version 0 (matches original behavior).
   {
-    EepromField lowVCutoff = makeCheckboxField(36, "lowVoltageCutoff", ui->lowVoltageCuttoffBox);
+    EepromField lowVCutoff = makeExclusiveCheckboxField(36, "lowVoltageCutoff", ui->lowVoltageCuttoffBox, ui->absoluteVotlageCheckbox);
     lowVCutoff.versionGatedSkip = true;
     f.push_back(lowVCutoff);
 
@@ -2197,7 +2197,7 @@ void Widget::on_activeBrakeCheckbox_stateChanged(int arg1) {
 }
 
 void Widget::on_absoluteVoltageSlider_valueChanged(int value) {
-  QString text = QString::number(value);
+  QString text = QString::number(value * 0.5);
   ui->absoluateVoltageLineedit->setText(text);
 }
 
