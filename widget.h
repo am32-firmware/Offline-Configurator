@@ -248,6 +248,7 @@ class Widget : public QWidget {
   void hideEEPROMSettings(bool b);
   void allup();
   bool connectMotor(uint8_t motor);
+  void connectMotorWithRetry(uint8_t motor);
   void sendFirstEeprom(uint8_t eeprom_type);
   void closeSerialPort();
   void readInitData();
@@ -295,6 +296,9 @@ class Widget : public QWidget {
   QByteArray *bluejay_tune = nullptr;
   QString filename;
   QByteArray *eeprom_buffer = nullptr;
+  // set by connectMotor() once the ESC has returned its settings block, even
+  // if the block was then rejected (blank or outdated settings)
+  bool settings_block_received = false;
   QByteArray *music_buffer = nullptr;
   uint16_t eeprom_address = 0x7c00;
   bool musicBufferFull = false;
