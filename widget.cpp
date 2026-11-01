@@ -301,9 +301,11 @@ void Widget::applyBufferToUi(const QByteArray &buffer) {
 // every UI-bound field overwritten by the current UI state. Used for both
 // flashing (on_writeEEPROM_clicked) and saving to disk (on_saveConfigButton_clicked).
 QByteArray Widget::buildBufferFromUi(const QByteArray &base) {
-  QByteArray out;
-  for (int i = 0; i < 48; i++) {
-    out.append(base.at(i));
+  // start from zeros and copy only what base holds: QByteArray::at() is not
+  // bounds checked in release builds, so a short base must not be indexed
+  QByteArray out(48, '\0');
+  for (int i = 0; i < 48 && i < base.size(); i++) {
+    out[i] = base.at(i);
   }
   for (const EepromField &field : eepromFieldTable()) {
     out[field.offset] = (char)field.fromUi();
@@ -1180,7 +1182,15 @@ bool Widget::connectMotor(uint8_t motor) {
     QMessageBox::warning(  // no settings area found
         this, tr("Application Name"),
         tr("Boot bit set to 0xFF"));
-    return 0;
+    // nothing valid was read, so drop any settings from a previous ESC and
+    // hide the settings controls (they were shown when the read succeeded)
+    // so Save Settings can't write from an empty or stale buffer
+    eeprom_buffer->clear();
+    hideEEPROMSettings(true);
+    ui->flashFourwayFrame->setHidden(false);
+    ui->escStatusLabel_2->setText("Connected - No EEprom");
+    ui->escStatusLabel->setText("Connected - No EEprom");
+    return false;
   }
   if ((input_buffer->at(0) == (char)0x01)) {
     if ((input_buffer->at(1) == (char)0xFF) ||
@@ -1191,6 +1201,7 @@ bool Widget::connectMotor(uint8_t motor) {
                              // been written
           this, tr("Application Name"),
           tr("No settings found use 'Send default EEPROM' under FLASH tab"));
+      eeprom_buffer->clear();
       ui->eepromFrame->setHidden(true);
       ui->inputservoFrame->setHidden(true);
       ui->flashFourwayFrame->setHidden(false);
@@ -1205,6 +1216,7 @@ bool Widget::connectMotor(uint8_t motor) {
                              // been written
           this, tr("Application Name"),
           tr("Outdated firmware detected 'This config tool is for 2.19 or higher"));
+      eeprom_buffer->clear();
       //   ui->sendFirstEEPROM->setHidden(true);
       ui->crawler_default_button->setHidden(true);
       ui->eepromFrame->setHidden(true);
@@ -1256,6 +1268,7 @@ bool Widget::connectMotor(uint8_t motor) {
     ui->sinCheckBox->setChecked(false);
     ui->escStatusLabel_2->setText("Connected - No EEprom");
     ui->escStatusLabel->setText("Connected - No EEprom");
+    eeprom_buffer->clear();
     for (int i = 0; i < 48; i++) {
       eeprom_buffer->append(char(0));
     }
@@ -1462,6 +1475,12 @@ bool Widget::sendDirect(const QByteArray sendbuffer, uint16_t buffer_size,
 void Widget::on_writeEEPROM_2_clicked() { on_writeEEPROM_clicked(); }
 
 void Widget::on_writeEEPROM_clicked() {
+  if (eeprom_buffer->size() < 48) {
+    // no settings have been read from the ESC or loaded from a file; writing
+    // now would send a mostly zero settings block
+    ui->escStatusLabel->setText("No settings read - connect and read settings first");
+    return;
+  }
   QByteArray eeprom_out = buildBufferFromUi(*eeprom_buffer);
   if (writeEepromPreserving(0, eeprom_out)) {
     ui->escStatusLabel->setText("WRITE EEPROM SUCCESSFUL");
@@ -1804,6 +1823,11 @@ int Widget::getshift(int some_number)
 }
 
 void Widget::on_uploadMusic_clicked() {
+  if (eeprom_buffer->size() < 48) {
+    // the tune is written together with the 48 settings bytes
+    ui->escStatusLabel->setText("No settings read - connect and read settings first");
+    return;
+  }
   QString music = ui->MusicTextEdit->toPlainText();
   uint8_t bytes[128];
   uint16_t gen_length = ui->genLengthSpinbox->value();
@@ -1844,6 +1868,10 @@ void Widget::on_crawler_default_button_clicked() {
 }
 
 void Widget::on_saveConfigButton_clicked() {
+  if (eeprom_buffer->size() < 48) {
+    ui->configFileInfo->setText("No settings read - connect and read settings first");
+    return;
+  }
   QByteArray eeprom_out = buildBufferFromUi(*eeprom_buffer);
 
   QFileDialog::saveFileContent(eeprom_out, "am32_v3_config.bin");
