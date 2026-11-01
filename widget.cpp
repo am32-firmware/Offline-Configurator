@@ -47,6 +47,10 @@ Widget::Widget(QWidget *parent)
   connect(timer, SIGNAL(timeout()), this, SLOT(serialInfoStuff()));
   timer->start(2000);
 
+  QTimer *keepalive_timer = new QTimer(this);
+  connect(keepalive_timer, &QTimer::timeout, this, &Widget::sendKeepAlive);
+  keepalive_timer->start(500);
+
   //  connect(m_serial, &QSerialPort::readyRead, this, &Widget::readData);  //
   //  an interrupt for reading serial
 
@@ -81,6 +85,13 @@ Widget::~Widget() { delete ui; }
 // single place that lists every field's offset, valid range and UI control;
 // applyBufferToUi()/buildBufferFromUi() walk it generically.
 namespace {
+
+// sets a flag for the lifetime of a scope, for functions with many returns
+struct FlagGuard {
+  bool &flag;
+  explicit FlagGuard(bool &f) : flag(f) { flag = true; }
+  ~FlagGuard() { flag = false; }
+};
 
 EepromField makeCheckboxField(int offset, const char *name, QCheckBox *box) {
   EepromField f;
@@ -684,6 +695,26 @@ bool Widget::writeEepromPreserving(int offset,
   return writeEepromImage(image);
 }
 
+// Keeps a 4-way passthrough session alive while the user is between
+// operations. Without traffic ArduPilot ends the passthrough after about a
+// second and drives the signal line low, and an AM32 bootloader with valid
+// settings treats a low line as the cue to start the firmware, so the ESC
+// stops answering. The flight controller forwards this to the ESC as the
+// bootloader's CMD_KEEP_ALIVE.
+void Widget::sendKeepAlive() {
+  if (fourway_busy || four_way->direct || !four_way->passthrough_started ||
+      !four_way->ESC_connected || !m_serial->isOpen()) {
+    return;
+  }
+  writeData(four_way->makeFourWayCommand(0x30, four_way->connected_motor));
+  m_serial->waitForBytesWritten(100);
+  // drain the reply here: readData() would take it as the answer to a user
+  // command
+  while (m_serial->waitForReadyRead(100)) {
+  }
+  m_serial->readAll();
+}
+
 void Widget::on_sendMessageButton_clicked() {
   // const QByteArray data = ui->plainTextEdit->toPlainText().toLocal8Bit();
   // writeData(data);
@@ -818,6 +849,7 @@ void Widget::resetESC() {
 void Widget::on_loadBinary_clicked() { loadBinFile(); }
 
 void Widget::on_writeBinary_clicked() {
+  FlagGuard busy(fourway_busy);  // the flash loop calls processEvents()
   if (four_way->ESC_connected == false) {
     ui->StatusLabel->setText("NOT CONNECTED");
     return;
@@ -1001,6 +1033,7 @@ bool Widget::verifyFirmwareImage(const QByteArray &image, QString &error) {
 }
 
 void Widget::on_VerifyFlash_clicked() {
+  FlagGuard busy(fourway_busy);  // verifyFirmwareImage() calls processEvents()
   QByteArray line;
   QString error;
   if (!loadFirmwareImage(line, error) ||
@@ -1033,6 +1066,7 @@ uint16_t Widget::eepromReadAddress() { return four_way->eepromReadAddress(); }
 uint16_t Widget::filenameReadAddress() { return four_way->filenameReadAddress(); }
 
 bool Widget::connectMotor(uint8_t motor) {
+  FlagGuard busy(fourway_busy);  // calls processEvents()
   uint16_t buffer_length = 48;
   connected_firmware_name.clear();
   settings_block_received = false;
