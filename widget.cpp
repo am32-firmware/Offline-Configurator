@@ -1035,6 +1035,7 @@ uint16_t Widget::filenameReadAddress() { return four_way->filenameReadAddress();
 bool Widget::connectMotor(uint8_t motor) {
   uint16_t buffer_length = 48;
   connected_firmware_name.clear();
+  settings_block_received = false;
 
   ui->escStatusLabel->setText("Connecting to ESC...");
   ui->escStatusLabel_2->setText("Connecting to ESC...");
@@ -1156,6 +1157,10 @@ bool Widget::connectMotor(uint8_t motor) {
   }
 
   connected_firmware_name = input_buffer->left(32);
+  // the ESC answered; from here on a false return means its settings were
+  // rejected (and the user warned), not that communication failed
+  settings_block_received = true;
+
   QString name;  // 2 bytes
   name.append(QChar(input_buffer->at(0)));
   name.append(QChar(input_buffer->at(1)));
@@ -1312,6 +1317,30 @@ void Widget::showSingleMotor(bool tf) {
   ui->initMotor4_4->setHidden(tf);
 }
 
+// Reads the settings of one ESC (motor 0-3), retrying once only if the ESC
+// did not answer. If it answered but its settings were rejected,
+// connectMotor() has already warned the user and set the status labels, and
+// a retry would only show the same warning again.
+void Widget::connectMotorWithRetry(uint8_t motor) {
+  const QString prefix = QString("M%1:").arg(motor + 1);
+  for (int attempt = 0; attempt < 2; attempt++) {
+    if (connectMotor(motor)) {
+      ui->escStatusLabel->setText(prefix + "Connected: Settings read OK ");
+      four_way->connected_motor = motor;
+      return;
+    }
+    if (settings_block_received) {
+      four_way->connected_motor = motor;
+      return;
+    }
+    if (attempt == 0) {
+      ui->escStatusLabel->setText(prefix + "Did not connect - retrying ");
+      ui->StatusLabel->setText("Connecting");
+    }
+  }
+  ui->escStatusLabel->setText(prefix + "Did not connect");
+}
+
 void Widget::on_initMotor1_clicked() {
   allup();
   if (four_way->direct) {
@@ -1328,20 +1357,7 @@ void Widget::on_initMotor1_clicked() {
   // QTimer::singleShot(1200, this, &Widget::endTimer);
   // four_way->connected_motor = 0x00;
 
-  if (connectMotor(0x00)) {
-    ui->escStatusLabel->setText("M1:Connected: Settings read OK ");
-    four_way->connected_motor = 0x00;
-    return;
-  } else {
-    ui->escStatusLabel->setText("M1:Did not connect - retrying ");
-    ui->StatusLabel->setText("Connecting");
-  }
-  if (connectMotor(0x00)) {
-    ui->escStatusLabel->setText("M1:Connected: Settings read OK ");
-    four_way->connected_motor = 0x00;
-  } else {
-    ui->escStatusLabel->setText("M1:Did not connect");
-  }
+  connectMotorWithRetry(0x00);
   //  four_way->ack_required = true;
   //  writeData(four_way->makeFourWayCommand(0x37, 0x00));
   //  m_serial->waitForBytesWritten(200);
@@ -1355,20 +1371,7 @@ void Widget::on_initMotor2_clicked() {
   ui->initMotor2_2->setFlat(true);
   ui->initMotor2_3->setFlat(true);
   ui->MotorLabel->setText("M2:");
-  if (connectMotor(0x01)) {
-    ui->escStatusLabel->setText("M2:Connected: Settings read OK ");
-    four_way->connected_motor = 0x01;
-    return;
-  } else {
-    ui->escStatusLabel->setText("M2:Did not connect - retrying ");
-    ui->StatusLabel->setText("Connecting");
-  }
-  if (connectMotor(0x01)) {
-    ui->escStatusLabel->setText("M2:Connected: Settings read OK ");
-    four_way->connected_motor = 0x01;
-  } else {
-    ui->escStatusLabel->setText("M2:Did not connect");
-  }
+  connectMotorWithRetry(0x01);
   //  timerdone = false;
   //  QTimer::singleShot(1200, this, &Widget::endTimer);
   //  four_way->connected_motor = 0x01;
@@ -1385,21 +1388,7 @@ void Widget::on_initMotor3_clicked() {
   ui->initMotor3_2->setFlat(true);
   ui->initMotor3_3->setFlat(true);
   ui->MotorLabel->setText("M3:");
-  if (connectMotor(0x02)) {
-    ui->escStatusLabel->setText("M3:Connected: Settings read OK ");
-    four_way->connected_motor = 0x02;
-    return;
-  } else {
-    ui->escStatusLabel->setText("M3:Did not connect - retrying ");
-
-    ui->StatusLabel->setText("Connecting");
-  }
-  if (connectMotor(0x02)) {
-    ui->escStatusLabel->setText("M3:Connected: Settings read OK ");
-    four_way->connected_motor = 0x02;
-  } else {
-    ui->escStatusLabel->setText("M3:Did not connect");
-  }
+  connectMotorWithRetry(0x02);
   //  timerdone = false;
   //  QTimer::singleShot(1200, this, &Widget::endTimer);
   //  four_way->connected_motor = 0x02;
@@ -1416,21 +1405,7 @@ void Widget::on_initMotor4_clicked() {
   ui->initMotor4_2->setFlat(true);
   ui->initMotor4_3->setFlat(true);
   ui->MotorLabel->setText("M4:");
-  if (connectMotor(0x03)) {
-    ui->escStatusLabel->setText("M4:Connected: Settings read OK ");
-    four_way->connected_motor = 0x03;
-    return;
-  } else {
-    ui->escStatusLabel->setText("M4:Did not connect - retrying ");
-    ui->StatusLabel->setText("Connecting");
-  }
-
-  if (connectMotor(0x03)) {
-    ui->escStatusLabel->setText("M4:Connected: Settings read OK ");
-    four_way->connected_motor = 0x03;
-  } else {
-    ui->escStatusLabel->setText("M4:Did not connect");
-  }
+  connectMotorWithRetry(0x03);
   //  timerdone = false;
   //  QTimer::singleShot(1200, this, &Widget::endTimer);
   //  four_way->connected_motor = 0x03;
