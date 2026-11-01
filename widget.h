@@ -45,6 +45,8 @@ class Widget : public QWidget {
 
  private slots:
 
+  void sendKeepAlive();
+
   uint8_t mspSerialChecksumBuf(uint8_t checksum, const uint8_t *data, int len);
 
   void send_mspCommand(uint8_t cmd, QByteArray payload);
@@ -299,6 +301,9 @@ class Widget : public QWidget {
   // set by connectMotor() once the ESC has returned its settings block, even
   // if the block was then rejected (blank or outdated settings)
   bool settings_block_received = false;
+  // true while an operation that calls processEvents() is talking to the
+  // ESC, so the keep-alive timer can't interleave its own traffic
+  bool fourway_busy = false;
   QByteArray *music_buffer = nullptr;
   uint16_t eeprom_address = 0x7c00;
   bool musicBufferFull = false;
