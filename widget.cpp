@@ -41,6 +41,10 @@ Widget::Widget(QWidget *parent)
   connect(timer, SIGNAL(timeout()), this, SLOT(serialInfoStuff()));
   timer->start(2000);
 
+  QTimer *keepalive_timer = new QTimer(this);
+  connect(keepalive_timer, &QTimer::timeout, this, &Widget::sendKeepAlive);
+  keepalive_timer->start(500);
+
   //  connect(m_serial, &QSerialPort::readyRead, this, &Widget::readData);  //
   //  an interrupt for reading serial
 
@@ -75,6 +79,13 @@ Widget::~Widget() { delete ui; }
 // single place that lists every field's offset, valid range and UI control;
 // applyBufferToUi()/buildBufferFromUi() walk it generically.
 namespace {
+
+// sets a flag for the lifetime of a scope, for functions with many returns
+struct FlagGuard {
+  bool &flag;
+  explicit FlagGuard(bool &f) : flag(f) { flag = true; }
+  ~FlagGuard() { flag = false; }
+};
 
 EepromField makeCheckboxField(int offset, const char *name, QCheckBox *box) {
   EepromField f;
@@ -295,9 +306,11 @@ void Widget::applyBufferToUi(const QByteArray &buffer) {
 // every UI-bound field overwritten by the current UI state. Used for both
 // flashing (on_writeEEPROM_clicked) and saving to disk (on_saveConfigButton_clicked).
 QByteArray Widget::buildBufferFromUi(const QByteArray &base) {
-  QByteArray out;
-  for (int i = 0; i < 48; i++) {
-    out.append(base.at(i));
+  // start from zeros and copy only what base holds: QByteArray::at() is not
+  // bounds checked in release builds, so a short base must not be indexed
+  QByteArray out(48, '\0');
+  for (int i = 0; i < 48 && i < base.size(); i++) {
+    out[i] = base.at(i);
   }
   for (const EepromField &field : eepromFieldTable()) {
     out[field.offset] = (char)field.fromUi();
@@ -638,6 +651,26 @@ void Widget::readData() {
 
 void Widget::writeData(const QByteArray &data) { m_serial->write(data); }
 
+// Keeps a 4-way passthrough session alive while the user is between
+// operations. Without traffic ArduPilot ends the passthrough after about a
+// second and drives the signal line low, and an AM32 bootloader with valid
+// settings treats a low line as the cue to start the firmware, so the ESC
+// stops answering. The flight controller forwards this to the ESC as the
+// bootloader's CMD_KEEP_ALIVE.
+void Widget::sendKeepAlive() {
+  if (fourway_busy || four_way->direct || !four_way->passthrough_started ||
+      !four_way->ESC_connected || !m_serial->isOpen()) {
+    return;
+  }
+  writeData(four_way->makeFourWayCommand(0x30, four_way->connected_motor));
+  m_serial->waitForBytesWritten(100);
+  // drain the reply here: readData() would take it as the answer to a user
+  // command
+  while (m_serial->waitForReadyRead(100)) {
+  }
+  m_serial->readAll();
+}
+
 void Widget::on_sendMessageButton_clicked() {
   // const QByteArray data = ui->plainTextEdit->toPlainText().toLocal8Bit();
   // writeData(data);
@@ -800,6 +833,7 @@ void Widget::resetESC() {
 void Widget::on_loadBinary_clicked() { loadBinFile(); }
 
 void Widget::on_writeBinary_clicked() {
+  FlagGuard busy(fourway_busy);  // the flash loop calls processEvents()
   uint16_t chunk_size = 128;
 
   if (four_way->ESC_connected == false) {
@@ -1141,7 +1175,9 @@ void Widget::endTimer() {
 }
 
 bool Widget::connectMotor(uint8_t motor) {
+  FlagGuard busy(fourway_busy);  // calls processEvents()
   uint16_t buffer_length = 48;
+  settings_block_received = false;
 
   ui->escStatusLabel->setText("Connecting to ESC...");
   ui->escStatusLabel_2->setText("Connecting to ESC...");
@@ -1240,6 +1276,10 @@ bool Widget::connectMotor(uint8_t motor) {
     }
   }
 
+  // the ESC answered; from here on a false return means its settings were
+  // rejected (and the user warned), not that communication failed
+  settings_block_received = true;
+
   QString name;  // 2 bytes
   name.append(QChar(input_buffer->at(0)));
   name.append(QChar(input_buffer->at(1)));
@@ -1266,7 +1306,15 @@ bool Widget::connectMotor(uint8_t motor) {
     QMessageBox::warning(  // no settings area found
         this, tr("Application Name"),
         tr("Boot bit set to 0xFF"));
-    return 0;
+    // nothing valid was read, so drop any settings from a previous ESC and
+    // hide the settings controls (they were shown when the read succeeded)
+    // so Save Settings can't write from an empty or stale buffer
+    eeprom_buffer->clear();
+    hideEEPROMSettings(true);
+    ui->flashFourwayFrame->setHidden(false);
+    ui->escStatusLabel_2->setText("Connected - No EEprom");
+    ui->escStatusLabel->setText("Connected - No EEprom");
+    return false;
   }
   if ((input_buffer->at(0) == (char)0x01)) {
     if ((input_buffer->at(1) == (char)0xFF) ||
@@ -1277,6 +1325,7 @@ bool Widget::connectMotor(uint8_t motor) {
                              // been written
           this, tr("Application Name"),
           tr("No settings found use 'Send default EEPROM' under FLASH tab"));
+      eeprom_buffer->clear();
       ui->eepromFrame->setHidden(true);
       ui->inputservoFrame->setHidden(true);
       ui->flashFourwayFrame->setHidden(false);
@@ -1291,6 +1340,7 @@ bool Widget::connectMotor(uint8_t motor) {
                              // been written
           this, tr("Application Name"),
           tr("Outdated firmware detected 'This config tool is for 2.19 or higher"));
+      eeprom_buffer->clear();
       //   ui->sendFirstEEPROM->setHidden(true);
       ui->crawler_default_button->setHidden(true);
       ui->eepromFrame->setHidden(true);
@@ -1341,6 +1391,7 @@ bool Widget::connectMotor(uint8_t motor) {
     ui->sinCheckBox->setChecked(false);
     ui->escStatusLabel_2->setText("Connected - No EEprom");
     ui->escStatusLabel->setText("Connected - No EEprom");
+    eeprom_buffer->clear();
     for (int i = 0; i < 48; i++) {
       eeprom_buffer->append(char(0));
     }
@@ -1384,6 +1435,30 @@ void Widget::showSingleMotor(bool tf) {
   ui->initMotor4_4->setHidden(tf);
 }
 
+// Reads the settings of one ESC (motor 0-3), retrying once only if the ESC
+// did not answer. If it answered but its settings were rejected,
+// connectMotor() has already warned the user and set the status labels, and
+// a retry would only show the same warning again.
+void Widget::connectMotorWithRetry(uint8_t motor) {
+  const QString prefix = QString("M%1:").arg(motor + 1);
+  for (int attempt = 0; attempt < 2; attempt++) {
+    if (connectMotor(motor)) {
+      ui->escStatusLabel->setText(prefix + "Connected: Settings read OK ");
+      four_way->connected_motor = motor;
+      return;
+    }
+    if (settings_block_received) {
+      four_way->connected_motor = motor;
+      return;
+    }
+    if (attempt == 0) {
+      ui->escStatusLabel->setText(prefix + "Did not connect - retrying ");
+      ui->StatusLabel->setText("Connecting");
+    }
+  }
+  ui->escStatusLabel->setText(prefix + "Did not connect");
+}
+
 void Widget::on_initMotor1_clicked() {
   allup();
   if (four_way->direct) {
@@ -1400,20 +1475,7 @@ void Widget::on_initMotor1_clicked() {
   // QTimer::singleShot(1200, this, &Widget::endTimer);
   // four_way->connected_motor = 0x00;
 
-  if (connectMotor(0x00)) {
-    ui->escStatusLabel->setText("M1:Connected: Settings read OK ");
-    four_way->connected_motor = 0x00;
-    return;
-  } else {
-    ui->escStatusLabel->setText("M1:Did not connect - retrying ");
-    ui->StatusLabel->setText("Connecting");
-  }
-  if (connectMotor(0x00)) {
-    ui->escStatusLabel->setText("M1:Connected: Settings read OK ");
-    four_way->connected_motor = 0x00;
-  } else {
-    ui->escStatusLabel->setText("M1:Did not connect");
-  }
+  connectMotorWithRetry(0x00);
   //  four_way->ack_required = true;
   //  writeData(four_way->makeFourWayCommand(0x37, 0x00));
   //  m_serial->waitForBytesWritten(200);
@@ -1427,20 +1489,7 @@ void Widget::on_initMotor2_clicked() {
   ui->initMotor2_2->setFlat(true);
   ui->initMotor2_3->setFlat(true);
   ui->MotorLabel->setText("M2:");
-  if (connectMotor(0x01)) {
-    ui->escStatusLabel->setText("M2:Connected: Settings read OK ");
-    four_way->connected_motor = 0x01;
-    return;
-  } else {
-    ui->escStatusLabel->setText("M2:Did not connect - retrying ");
-    ui->StatusLabel->setText("Connecting");
-  }
-  if (connectMotor(0x01)) {
-    ui->escStatusLabel->setText("M2:Connected: Settings read OK ");
-    four_way->connected_motor = 0x01;
-  } else {
-    ui->escStatusLabel->setText("M2:Did not connect");
-  }
+  connectMotorWithRetry(0x01);
   //  timerdone = false;
   //  QTimer::singleShot(1200, this, &Widget::endTimer);
   //  four_way->connected_motor = 0x01;
@@ -1457,21 +1506,7 @@ void Widget::on_initMotor3_clicked() {
   ui->initMotor3_2->setFlat(true);
   ui->initMotor3_3->setFlat(true);
   ui->MotorLabel->setText("M3:");
-  if (connectMotor(0x02)) {
-    ui->escStatusLabel->setText("M3:Connected: Settings read OK ");
-    four_way->connected_motor = 0x02;
-    return;
-  } else {
-    ui->escStatusLabel->setText("M3:Did not connect - retrying ");
-
-    ui->StatusLabel->setText("Connecting");
-  }
-  if (connectMotor(0x02)) {
-    ui->escStatusLabel->setText("M3:Connected: Settings read OK ");
-    four_way->connected_motor = 0x02;
-  } else {
-    ui->escStatusLabel->setText("M3:Did not connect");
-  }
+  connectMotorWithRetry(0x02);
   //  timerdone = false;
   //  QTimer::singleShot(1200, this, &Widget::endTimer);
   //  four_way->connected_motor = 0x02;
@@ -1488,21 +1523,7 @@ void Widget::on_initMotor4_clicked() {
   ui->initMotor4_2->setFlat(true);
   ui->initMotor4_3->setFlat(true);
   ui->MotorLabel->setText("M4:");
-  if (connectMotor(0x03)) {
-    ui->escStatusLabel->setText("M4:Connected: Settings read OK ");
-    four_way->connected_motor = 0x03;
-    return;
-  } else {
-    ui->escStatusLabel->setText("M4:Did not connect - retrying ");
-    ui->StatusLabel->setText("Connecting");
-  }
-
-  if (connectMotor(0x03)) {
-    ui->escStatusLabel->setText("M4:Connected: Settings read OK ");
-    four_way->connected_motor = 0x03;
-  } else {
-    ui->escStatusLabel->setText("M4:Did not connect");
-  }
+  connectMotorWithRetry(0x03);
   //  timerdone = false;
   //  QTimer::singleShot(1200, this, &Widget::endTimer);
   //  four_way->connected_motor = 0x03;
@@ -1559,6 +1580,12 @@ void Widget::sendDirect(const QByteArray sendbuffer, uint16_t buffer_size,
 void Widget::on_writeEEPROM_2_clicked() { on_writeEEPROM_clicked(); }
 
 void Widget::on_writeEEPROM_clicked() {
+  if (eeprom_buffer->size() < 48) {
+    // no settings have been read from the ESC or loaded from a file; writing
+    // now would send a mostly zero settings block
+    ui->escStatusLabel->setText("No settings read - connect and read settings first");
+    return;
+  }
   four_way->ack_required = true;
   QByteArray eeprom_out = buildBufferFromUi(*eeprom_buffer);
 
@@ -1925,6 +1952,11 @@ int Widget::getshift(int some_number)
 }
 
 void Widget::on_uploadMusic_clicked() {
+  if (eeprom_buffer->size() < 48) {
+    // the tune is written together with the 48 settings bytes
+    ui->escStatusLabel->setText("No settings read - connect and read settings first");
+    return;
+  }
   QString music = ui->MusicTextEdit->toPlainText();
   uint8_t bytes[128];
   uint16_t gen_length = ui->genLengthSpinbox->value();
@@ -1978,6 +2010,10 @@ void Widget::on_crawler_default_button_clicked() {
 }
 
 void Widget::on_saveConfigButton_clicked() {
+  if (eeprom_buffer->size() < 48) {
+    ui->configFileInfo->setText("No settings read - connect and read settings first");
+    return;
+  }
   QByteArray eeprom_out = buildBufferFromUi(*eeprom_buffer);
 
   QFileDialog::saveFileContent(eeprom_out, "am32_v3_config.bin");
