@@ -91,8 +91,6 @@ class Widget : public QWidget {
 
   void on_endPassthrough_clicked();
 
-  QByteArray convertFromHex();
-
   void on_checkBox_stateChanged(int arg1);
 
   void on_initMotor1_2_clicked();
@@ -238,6 +236,8 @@ class Widget : public QWidget {
   std::vector<EepromField> eepromFieldTable();
   void applyBufferToUi(const QByteArray &buffer);
   QByteArray buildBufferFromUi(const QByteArray &base);
+  bool loadFirmwareImage(QByteArray &image, QString &error);
+  bool verifyFirmwareImage(const QByteArray &image, QString &error);
   void loadBinFile();
   int getshift(int some_number);
   void sendMSPThrottle();
@@ -248,13 +248,22 @@ class Widget : public QWidget {
   void hideEEPROMSettings(bool b);
   void allup();
   bool connectMotor(uint8_t motor);
-  void sendFirstEeprom(uint8_t eeprom_type);
+  uint16_t eepromWriteAddress();
+  uint16_t eepromReadAddress();
+  uint16_t filenameReadAddress();
+  bool sendFirstEeprom(uint8_t eeprom_type);
   void closeSerialPort();
   void readInitData();
-  void sendDirect(const QByteArray sendbuffer, uint16_t buffer_size, uint16_t address);
+  QByteArray directReply(const QByteArray &command, int replySize,
+                         int idleMs = 200, int totalMs = 2000);
+  bool readDirectRegion(uint16_t address, int size, QByteArray &out);
+  bool readEepromImage(QByteArray &out);
+  bool writeEepromImage(const QByteArray &image);
+  bool writeEepromPreserving(int offset, const QByteArray &replacement);
+  bool sendDirect(const QByteArray sendbuffer, uint16_t buffer_size,
+                  uint16_t address);
   void readData();
   void putData(const QByteArray &data);
-  void verifyFlash();
   void writeData(const QByteArray &data);
   void showStatusMessage(const QString &message);
   bool getMusic();
@@ -270,6 +279,7 @@ class Widget : public QWidget {
     CRC_ERROR
 
   };
+  QByteArray connected_firmware_name;
   bool parseMSPMessage = true;
   bool more_to_come = false;
   bool timerdone = false;

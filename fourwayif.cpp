@@ -1,6 +1,6 @@
 #include "fourwayif.h"
 
-#include <QMessageBox>
+#include <QString>
 
 FourWayIF::FourWayIF() {
   testVar = 12345;
@@ -9,10 +9,32 @@ FourWayIF::FourWayIF() {
   ack_received = false;
   passthrough_started = false;
   ack_type = 1;
+  direct = false;
+  connected_motor = 0;
+  resetDeviceState();
+}
+
+void FourWayIF::resetDeviceState() {
   ESC_connected = false;
+  bootloader_version = 0;
+  flash_layout_known = false;
+  eeprom_address = 0;
+  firmware_start = 4096;  // pre-v3 byte offset; v3 fills devinfo_v3 instead
+  memory_divider_required_four = false;
+  devinfo_v3 = {};        // all zero / enabled = false
+  response_expected = false;
+  expected_command = 0;
+  expected_address = 0;
+}
+
+void FourWayIF::expectFourWayResponse(uint8_t command, uint16_t address) {
+  expected_command = command;
+  expected_address = address;
+  response_expected = true;
 }
 
 QByteArray FourWayIF::makeFourWayWriteCommand(const QByteArray sendbuffer, int buffer_size, uint16_t address) {
+  expectFourWayResponse(0x3b, address);
   if (buffer_size == 256) {
     buffer_size = 0;
   }
@@ -69,6 +91,7 @@ bool FourWayIF::checkCRC(const QByteArray data, uint16_t buffer_length) {
 }
 
 QByteArray FourWayIF::makeFourWayReadCommand(int buffer_size, uint16_t address) {
+  expectFourWayResponse(0x3a, address);
   if (buffer_size == 256) {
     buffer_size = 0;
   }
@@ -92,6 +115,7 @@ QByteArray FourWayIF::makeFourWayReadCommand(int buffer_size, uint16_t address) 
 }
 
 QByteArray FourWayIF::makeFourWayReadEEPROMCommand(int buffer_size, uint16_t address) {
+  expectFourWayResponse(0x3d, address);
   if (buffer_size == 256) {
     buffer_size = 0;
   }
@@ -131,6 +155,7 @@ uint16_t FourWayIF::makeCRC(const QByteArray data) {
 }
 
 QByteArray FourWayIF::makeFourWayCommand(uint8_t cmd, uint8_t device_num) {
+  expectFourWayResponse(cmd, 0);
   QByteArray fourWayMsgOut;
   fourWayMsgOut.append((char)0x2f);        // escape character PC
   fourWayMsgOut.append((char)cmd);         // 4 way command
@@ -160,4 +185,302 @@ void FourWayIF::set_Ack_req(char ackreq) {
 }
 
 bool FourWayIF::ACK_received() {
+  return ack_received;
+}
+
+bool FourWayIF::parseDeviceInfo(const QByteArray &data, bool direct) {
+  // 4-way responses carry a 2-byte [marker][cmd] prefix before the deviceInfo
+  // payload; the direct path has none (and the caller already stripped the
+  // 21-byte echo), so deviceInfo[k] lives at data[base + k].
+  resetDeviceState();
+  return parseDeviceInfoAt(data, direct ? 0 : 2);
+}
+
+bool FourWayIF::parseDevinfoBlock(const QByteArray &block) {
+  // A failed v3 read must disable the previous target's extended layout while
+  // retaining the short deviceInfo defaults obtained by InitFlash.
+  devinfo_v3 = {};
+  // block from ADDRESS_MAGIC_DEVINFO: magic1 (LE), magic2 (LE), deviceInfo...
+  if (block.size() < 8 + 9) {
+    return false;
+  }
+  uint32_t m1 = (uint8_t)block[0] | ((uint8_t)block[1] << 8) |
+                ((uint8_t)block[2] << 16) | ((uint32_t)(uint8_t)block[3] << 24);
+  uint32_t m2 = (uint8_t)block[4] | ((uint8_t)block[5] << 8) |
+                ((uint8_t)block[6] << 16) | ((uint32_t)(uint8_t)block[7] << 24);
+  if (m1 != DEVINFO_MAGIC1 || m2 != DEVINFO_MAGIC2) {
+    return false;
+  }
+  // first parse the 9-byte deviceInfo (version + flash-size-code defaults)
+  bool known = parseDeviceInfoAt(block, 8);
+
+  /*
+    v3 devinfo extension follows the 9-byte deviceInfo (packed), at block
+    offset 8+9 = 17:
+      [17]    length (sizeof the whole struct)
+      [18]    address_shift
+      [19,20] firmware_start  (little-endian)
+      [21,22] filename_start
+      [23,24] eeprom_start
+      [25,26] tune_start
+    The *_start values are the addresses to pass to CMD_SET_ADDRESS (already
+    shifted right by address_shift), so the bootloader's address<<address_shift
+    reconstructs the real flash address.
+  */
+  const int v = 8 + 9;  // 17, start of v3 extension
+  // Minimum struct size containing every field we read (length, address_shift,
+  // firmware_start, filename_start, eeprom_start, tune_start). A capped upper
+  // bound guards against a garbage byte being mistaken for a struct length.
+  static const uint8_t DEVINFO_V3_MIN = 27;
+  static const uint8_t DEVINFO_V3_MAX = 64;
+  if (bootloader_version >= BOOTLOADER_PROTOCOL_FW_START &&
+      block.size() >= v + 1) {
+    const uint8_t length = (uint8_t)block[v];
+    if (length < DEVINFO_V3_MIN || length > DEVINFO_V3_MAX ||
+        block.size() < length) {
+      qInfo("v3 devinfo: invalid length=%u (got %d bytes), ignoring",
+            length, (int)block.size());
+      return false;
+    }
+    const uint8_t addressShift = (uint8_t)block[v + 1];
+    const uint16_t firmwareStart = (uint8_t)block[v + 2] | ((uint8_t)block[v + 3] << 8);
+    const uint16_t filenameStart = (uint8_t)block[v + 4] | ((uint8_t)block[v + 5] << 8);
+    const uint16_t eepromStart = (uint8_t)block[v + 6] | ((uint8_t)block[v + 7] << 8);
+    const uint16_t tuneStart = (uint8_t)block[v + 8] | ((uint8_t)block[v + 9] << 8);
+    if (addressShift > 8 || firmwareStart < 1024 || filenameStart < 1024 ||
+        eepromStart < 1024 || tuneStart < 1024) {
+      qInfo("v3 devinfo: invalid address layout, ignoring");
+      return false;
+    }
+    devinfo_v3.length = length;
+    devinfo_v3.address_shift = addressShift;
+    devinfo_v3.firmware_start = firmwareStart;
+    devinfo_v3.filename_start = filenameStart;
+    devinfo_v3.eeprom_start = eepromStart;
+    devinfo_v3.tune_start = tuneStart;
+    devinfo_v3.enabled = true;
+    qInfo("v3 devinfo: len=%u shift=%u fw_start=0x%04x eeprom=0x%04x",
+          devinfo_v3.length, devinfo_v3.address_shift,
+          devinfo_v3.firmware_start, devinfo_v3.eeprom_start);
+  }
+  // A recognised legacy flash-size code is not enough here: callers use the
+  // return value to decide whether the extended address layout is available.
+  Q_UNUSED(known);
+  return devinfo_v3.enabled;
+}
+
+bool FourWayIF::parseDeviceInfoAt(const QByteArray &data, int base) {
+  // dump the raw deviceInfo so the testbed shows the protocol version and
+  // whether the v3 firmware-start bytes survive the link
+  {
+    QString hex;
+    for (int k = 0; k < data.size(); k++)
+      hex += QString::asprintf("%02x ", (uint8_t)data[k]);
+    qInfo("deviceInfo resp (base=%d size=%d): %s", base,
+          (int)data.size(), qPrintable(hex));
+  }
+
+  if (data.size() <= base + 7) {
+    return false;
+  }
+  bootloader_version = (uint8_t)data[base + 7];  // deviceInfo byte 8
+
+  const uint8_t flashcode = (uint8_t)data[base + 4];
+  bool known = true;
+  if (flashcode == 0x2b) {
+    qInfo("G071ESC_2KB_PAGE");
+    memory_divider_required_four = true;
+    eeprom_address = 0x7e00;  // eeprom address of 0x1f800 126kb
+    firmware_start = 4096;
+  } else if (flashcode == 0x1f) {
+    qInfo("F0531ESC_1KB_PAGE");
+    memory_divider_required_four = false;
+    eeprom_address = 0x7c00;  // eeprom address of 0x7c00 31kb
+    firmware_start = 4096;
+  } else if (flashcode == 0x35) {
+    qInfo("F3ESC_2KB_PAGE");
+    memory_divider_required_four = false;
+    eeprom_address = 0xF800;  // eeprom address of 0xf800 62kb
+    firmware_start = 4096;
+  } else if (flashcode == 0x15) {
+    qInfo("NXP ESC_8KB_PAGE");
+    memory_divider_required_four = false;
+    eeprom_address = 0xE000;  // eeprom address of 64k-8k
+    firmware_start = 16384;
+  } else if (flashcode == 0x16) {
+    qInfo("NXP 128K ESC_8KB_PAGE");
+    memory_divider_required_four = true;
+    eeprom_address = 0x7800;  // (128k-8k) >> 2
+    firmware_start = 16384;
+  } else {
+    qInfo("unknown flash size code 0x%02x", flashcode);
+    known = false;
+  }
+
+  // The v3 firmware_start (and the rest of the extended layout) is NOT in the
+  // 9-byte deviceInfo; it is read separately from ADDRESS_MAGIC_DEVINFO and
+  // parsed in parseDevinfoBlock(). Here we only have the flash-size-code
+  // defaults, used for pre-v3 bootloaders.
+  flash_layout_known = known;
+  ESC_connected = true;
+  return known;
+}
+
+bool FourWayIF::parseFourWayResponse(const QByteArray &resp, QByteArray &payloadOut) {
+  payloadOut.clear();
+  // Response framing is [0x2e, cmd, addr_hi, addr_lo, length, payload..., ACK,
+  // CRC_hi, CRC_lo].  Validate the complete frame before reading any indexed
+  // field.  A zero length byte is the protocol's 256-byte sentinel.
+  if (resp.size() < 8 || resp[0] != (char)0x2e) {
+    ack_type = FW_BAD_ACK;
+    return false;
+  }
+  int framePayloadLength = (uint8_t)resp[4];
+  if (framePayloadLength == 0) {
+    framePayloadLength = 256;
+  }
+  if (resp.size() != framePayloadLength + 8) {
+    qInfo("4WAY malformed response: length byte=%u, frame bytes=%d",
+          (uint8_t)resp[4], (int)resp.size());
+    ack_type = FW_BAD_ACK;
+    return false;
+  }
+  if (!checkCRC(resp, resp.size())) {
+    qInfo("4WAY CRC ERROR");
+    ack_type = FW_CRC_ERROR;
+    return false;
+  }
+  const uint16_t responseAddress = ((uint8_t)resp[2] << 8) |
+                                   (uint8_t)resp[3];
+  if (!response_expected || (uint8_t)resp[1] != expected_command ||
+      responseAddress != expected_address) {
+    qInfo("4WAY stale/unexpected response: cmd=0x%02x addr=0x%04x "
+          "expected_cmd=0x%02x expected_addr=0x%04x",
+          (uint8_t)resp[1], responseAddress, expected_command,
+          expected_address);
+    ack_type = FW_BAD_ACK;
+    return false;
+  }
+  if (resp[resp.size() - 3] != (char)0x00) {  // ACK byte (0x00 == OK)
+    qInfo("ACK ERROR: cmd=0x%02x ackcode=0x%02x", (uint8_t)resp[1],
+          (uint8_t)resp[resp.size() - 3]);
+    ack_type = FW_BAD_ACK;
+    return false;
+  }
+
+  // good ACK
+  response_expected = false;
+  ack_required = false;
+  ack_type = FW_ACK_OK;
+
+  if (resp[1] == (char)0x3a) {  // read response: payload starts at byte 5
+    // The 4-way length sentinel uses 0 to encode 256 (same convention as
+    // makeFourWayReadCommand). Decode it the same way here so 256-byte
+    // reads aren't silently truncated to 0 bytes.
+    payloadOut = resp.mid(5, framePayloadLength);
+  }
+  if (resp[1] == (char)0x37) {  // deviceInfo response
+    parseDeviceInfo(resp, false);
+  }
+  return true;
+}
+
+bool FourWayIF::addressLayoutUsable() const {
+  return (flash_layout_known || devinfo_v3.enabled) &&
+         (!memory_divider_required_four || devinfo_v3.enabled);
+}
+
+uint16_t FourWayIF::filenameReadAddress() const {
+  if (devinfo_v3.enabled) {
+    return devinfo_v3.filename_start;
+  }
+  if (bootloader_version >= BOOTLOADER_PROTOCOL_MAGIC_ADDR) {
+    return ADDRESS_MAGIC_FILE_NAME;
+  }
+  return eeprom_address - 32;
+}
+
+uint16_t FourWayIF::eepromReadAddress() const {
+  if (devinfo_v3.enabled) {
+    return devinfo_v3.eeprom_start;
+  }
+  if (bootloader_version >= BOOTLOADER_PROTOCOL_MAGIC_ADDR) {
+    return ADDRESS_MAGIC_EEPROM;
+  }
+  return eeprom_address;
+}
+
+uint16_t FourWayIF::eepromWriteAddress() const {
+  return eepromReadAddress();
+}
+
+uint16_t FourWayIF::eepromChunkAddress(uint32_t byteOffset) const {
+  const uint8_t shift = devinfo_v3.enabled ? devinfo_v3.address_shift
+                                           : (memory_divider_required_four ? 2 : 0);
+  const uint16_t start = devinfo_v3.enabled ? devinfo_v3.eeprom_start
+                                            : eeprom_address;
+  return (uint16_t)(start + (byteOffset >> shift));
+}
+
+uint16_t FourWayIF::tuneAddress() const {
+  if (devinfo_v3.enabled) {
+    // v3: tune_start is already a CMD_SET_ADDRESS value
+    return devinfo_v3.tune_start;
+  }
+  // pre-v3: tunes live 48 bytes past the EEPROM region in *byte* offset.
+  // Older bootloaders had no address_shift, so this stayed correct then.
+  return eeprom_address + 48;
+}
+
+uint16_t FourWayIF::firmwareChunkAddress(uint32_t offset) const {
+  if (devinfo_v3.enabled) {
+    // devinfo_v3.firmware_start is the CMD_SET_ADDRESS value of the app
+    // base; flash addresses step in units of (1<<address_shift) bytes
+    return (uint16_t)(devinfo_v3.firmware_start +
+                      (offset >> devinfo_v3.address_shift));
+  }
+  // pre-v3: firmware_start is a byte offset; divider MCUs shift by 2
+  uint32_t addr = firmware_start + offset;
+  if (memory_divider_required_four) {
+    addr >>= 2;
+  }
+  return (uint16_t)addr;
+}
+
+uint32_t FourWayIF::applicationOffset() const {
+  if (devinfo_v3.enabled)
+    return (uint32_t)devinfo_v3.firmware_start << devinfo_v3.address_shift;
+  return firmware_start;
+}
+
+uint32_t FourWayIF::eepromOffset() const {
+  if (devinfo_v3.enabled)
+    return (uint32_t)devinfo_v3.eeprom_start << devinfo_v3.address_shift;
+  return (uint32_t)eeprom_address << (memory_divider_required_four ? 2 : 0);
+}
+
+uint32_t FourWayIF::filenameOffset() const {
+  const uint32_t app = applicationOffset();
+  uint32_t filename;
+  if (devinfo_v3.enabled) {
+    filename = (uint32_t)devinfo_v3.filename_start
+               << devinfo_v3.address_shift;
+  } else {
+    const uint32_t eeprom = eepromOffset();
+    if (eeprom < 32)
+      return 0xffffffffu;
+    filename = eeprom - 32;
+  }
+  return filename >= app ? filename - app : 0xffffffffu;
+}
+
+uint32_t FourWayIF::applicationCapacity() const {
+  const uint32_t app = applicationOffset();
+  const uint32_t eeprom = eepromOffset();
+  return eeprom > app ? eeprom - app : 0;
+}
+
+bool FourWayIF::firmwareImageFits(uint32_t byteCount) const {
+  const uint64_t padded = ((uint64_t)byteCount + 7u) & ~7ull;
+  return byteCount != 0 && padded <= applicationCapacity();
 }
