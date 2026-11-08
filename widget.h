@@ -45,6 +45,8 @@ class Widget : public QWidget {
 
  private slots:
 
+  void sendKeepAlive();
+
   uint8_t mspSerialChecksumBuf(uint8_t checksum, const uint8_t *data, int len);
 
   void send_mspCommand(uint8_t cmd, QByteArray payload);
@@ -252,6 +254,7 @@ class Widget : public QWidget {
   uint16_t eepromReadAddress();
   uint16_t filenameReadAddress();
   bool sendFirstEeprom(uint8_t eeprom_type);
+  void connectMotorWithRetry(uint8_t motor);
   void closeSerialPort();
   void readInitData();
   QByteArray directReply(const QByteArray &command, int replySize,
@@ -305,6 +308,12 @@ class Widget : public QWidget {
   QByteArray *bluejay_tune = nullptr;
   QString filename;
   QByteArray *eeprom_buffer = nullptr;
+  // set by connectMotor() once the ESC has returned its settings block, even
+  // if the block was then rejected (blank or outdated settings)
+  bool settings_block_received = false;
+  // true while an operation that calls processEvents() is talking to the
+  // ESC, so the keep-alive timer can't interleave its own traffic
+  bool fourway_busy = false;
   QByteArray *music_buffer = nullptr;
   uint16_t eeprom_address = 0x7c00;
   bool musicBufferFull = false;
