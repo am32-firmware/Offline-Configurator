@@ -39,7 +39,7 @@ Widget::Widget(QWidget *parent)
   ui->setupUi(this);
   // ui->tabWidget->removeTab(4); // todo make these visible
   ui->tabWidget->removeTab(5);  // remove led tab for now
-  this->setWindowTitle("ESC Config Tool 1.98 - For firmware version 2.21 and higher");
+  this->setWindowTitle("ESC Config Tool 1.99 - For firmware version 2.21 and higher");
 
   serialInfoStuff();
 
@@ -81,6 +81,13 @@ Widget::~Widget() { delete ui; }
 // single place that lists every field's offset, valid range and UI control;
 // applyBufferToUi()/buildBufferFromUi() walk it generically.
 namespace {
+
+bool firmwareAtLeast(const QByteArray &buffer, uint8_t major, uint8_t minor) {
+  const uint8_t firmwareMajor = (uint8_t)buffer.at(3);
+  const uint8_t firmwareMinor = (uint8_t)buffer.at(4);
+  return firmwareMajor > major ||
+         (firmwareMajor == major && firmwareMinor >= minor);
+}
 
 EepromField makeCheckboxField(int offset, const char *name, QCheckBox *box) {
   EepromField f;
@@ -171,6 +178,14 @@ std::vector<EepromField> Widget::eepromFieldTable() {
   f.push_back(makeScaledLineEditField(11, "currentLimitD", 0, 500, ui->currentLimitDedit, 2));
   f.push_back(makeSliderField(12, "activeBrakePower", 0, 10, ui->activeBrakeSlider));
   f.push_back(makeComboBoxField(13, "brakeType", 0, 7, ui->brakeComboBox));
+  {
+    EepromField demag = makeComboBoxField(14, "demagCompensation", 0, 4,
+                                         ui->demagCompensationComboBox);
+    // Firmware treats blank/reserved values from older configurations as off.
+    QComboBox *box = ui->demagCompensationComboBox;
+    demag.toUi = [box](uint8_t v) { box->setCurrentIndex(v <= 4 ? v : 0); };
+    f.push_back(demag);
+  }
 
   f.push_back(makeCheckboxField(17, "directionReversed", ui->rvCheckBox));
   f.push_back(makeCheckboxField(18, "bidirectionalMode", ui->biDirectionCheckbox));
@@ -285,6 +300,12 @@ std::vector<EepromField> Widget::eepromFieldTable() {
 // the UI controls. Mirrors the version-0 special-casing that used to be
 // duplicated between connectMotor() and loadConfig().
 void Widget::applyBufferToUi(const QByteArray &buffer) {
+  const bool supportsDemag = firmwareAtLeast(buffer, 2, 22);
+  ui->demagCompensationComboBox->setVisible(supportsDemag);
+  ui->demagCompensationLabel->setVisible(supportsDemag);
+  const bool supportsZeroThrottle = firmwareAtLeast(buffer, 2, 21);
+  ui->brakeComboBox->setVisible(supportsZeroThrottle);
+  ui->label_42->setVisible(supportsZeroThrottle);
   const uint8_t eepromVersion = (uint8_t)buffer.at(1);
   for (const EepromField &field : eepromFieldTable()) {
     if (field.versionGatedSkip && eepromVersion == 0) {
@@ -306,6 +327,11 @@ QByteArray Widget::buildBufferFromUi(const QByteArray &base) {
     out.append(base.at(i));
   }
   for (const EepromField &field : eepromFieldTable()) {
+    // Preserve unsupported settings rather than writing hidden control values.
+    if ((field.offset == 13 && !firmwareAtLeast(base, 2, 21)) ||
+        (field.offset == 14 && !firmwareAtLeast(base, 2, 22))) {
+      continue;
+    }
     out[field.offset] = (char)field.fromUi();
   }
   return out;
