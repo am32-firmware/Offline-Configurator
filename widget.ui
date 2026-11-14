@@ -385,6 +385,28 @@
              <property name="frameShadow">
               <enum>QFrame::Shadow::Raised</enum>
              </property>
+             <widget class="QLabel" name="demagCompensationLabel">
+              <property name="geometry">
+               <rect><x>655</x><y>78</y><width>225</width><height>20</height></rect>
+              </property>
+              <property name="text">
+               <string>Missed ZC/ demag compensation</string>
+              </property>
+              <property name="buddy"><cstring>demagCompensationComboBox</cstring></property>
+             </widget>
+             <widget class="QComboBox" name="demagCompensationComboBox">
+              <property name="geometry">
+               <rect><x>500</x><y>75</y><width>145</width><height>26</height></rect>
+              </property>
+              <property name="toolTip">
+               <string>Missed zero-crossing / demagnetization compensation. Levels 2-4 reduce power after demag recovery.</string>
+              </property>
+              <item><property name="text"><string>0 = Off</string></property></item>
+              <item><property name="text"><string>1 = Coast only</string></property></item>
+              <item><property name="text"><string>2 = 1/32 power cut</string></property></item>
+              <item><property name="text"><string>3 = 1/16 power cut</string></property></item>
+              <item><property name="text"><string>4 = 1/8 power cut</string></property></item>
+             </widget>
              <widget class="QCheckBox" name="rvCheckBox">
               <property name="geometry">
                <rect>
@@ -441,7 +463,7 @@
               <property name="geometry">
                <rect>
                 <x>500</x>
-                <y>105</y>
+                <y>135</y>
                 <width>121</width>
                 <height>17</height>
                </rect>
@@ -755,7 +777,7 @@
               <property name="geometry">
                <rect>
                 <x>500</x>
-                <y>160</y>
+                <y>190</y>
                 <width>281</width>
                 <height>21</height>
                </rect>
@@ -1171,7 +1193,7 @@
               <property name="geometry">
                <rect>
                 <x>500</x>
-                <y>75</y>
+                <y>105</y>
                 <width>111</width>
                 <height>22</height>
                </rect>
@@ -1197,7 +1219,7 @@
               <property name="geometry">
                <rect>
                 <x>500</x>
-                <y>130</y>
+                <y>160</y>
                 <width>236</width>
                 <height>22</height>
                </rect>
@@ -1303,7 +1325,7 @@
               <property name="geometry">
                <rect>
                 <x>500</x>
-                <y>220</y>
+                <y>250</y>
                 <width>146</width>
                 <height>31</height>
                </rect>
@@ -1319,7 +1341,7 @@
               <property name="geometry">
                <rect>
                 <x>545</x>
-                <y>260</y>
+                <y>290</y>
                 <width>111</width>
                 <height>16</height>
                </rect>
@@ -1338,7 +1360,7 @@
               <property name="geometry">
                <rect>
                 <x>500</x>
-                <y>255</y>
+                <y>285</y>
                 <width>41</width>
                 <height>24</height>
                </rect>
@@ -1351,7 +1373,7 @@
               <property name="geometry">
                <rect>
                 <x>665</x>
-                <y>260</y>
+                <y>290</y>
                 <width>171</width>
                 <height>16</height>
                </rect>
@@ -1364,7 +1386,7 @@
               <property name="geometry">
                <rect>
                 <x>500</x>
-                <y>285</y>
+                <y>315</y>
                 <width>326</width>
                 <height>16</height>
                </rect>
@@ -1377,7 +1399,7 @@
               <property name="geometry">
                <rect>
                 <x>500</x>
-                <y>190</y>
+                <y>220</y>
                 <width>216</width>
                 <height>26</height>
                </rect>
@@ -1427,7 +1449,7 @@
               <property name="geometry">
                <rect>
                 <x>725</x>
-                <y>195</y>
+                <y>225</y>
                 <width>146</width>
                 <height>20</height>
                </rect>

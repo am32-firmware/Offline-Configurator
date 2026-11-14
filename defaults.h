@@ -19,7 +19,8 @@ uint8_t air_starteeprom[48] ={
     0x32,              //current control D value x 10 default 50 = 500
     0x02,              // active brake power
     0x00,              // brake on zero throttle options default 0
-    0x35, 0x31, 0x20,       // reserved 4 bytes
+    0x00,                 // missed ZC / demag compensation, byte 14 (off)
+    0x31, 0x20,           // reserved bytes 15-16
     0x00,      // direction reversed byte 17
     0x00,      // bidectional mode 1 for on 0 for off byte 18
     0x00,      // sinusoidal startup  byte 19
@@ -62,7 +63,9 @@ uint8_t crawler_starteeprom[48] ={
     0x01,              // bootloader version 0-255
     0x01,              // firmware version major
     0x23,              // firmware version minor 50
-    0x4e, 0x45, 0x4f, 0x45, 0x53, 0x43, 0x20, 0x66, 0x30, 0x35, 0x31, 0x20,       // ESC name, 12 bytes
+    0x4e, 0x45, 0x4f, 0x45, 0x53, 0x43, 0x20, 0x66, 0x30, // legacy bytes 5-13
+    0x00,                 // missed ZC / demag compensation, byte 14 (off)
+    0x31, 0x20,           // reserved bytes 15-16
     0x00,      // direction reversed byte 17
     0x01,      // bidectional mode 1 for on 0 for off byte 18
     0x01,      // sinusoidal startup  byte 19
