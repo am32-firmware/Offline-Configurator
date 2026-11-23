@@ -428,17 +428,10 @@ static int cmdSettings(const QString &port, uint8_t target) {
 static int flashConnected(QSerialPort &sp, FourWayIF &fw,
                           const QByteArray &image, uint32_t imageOrigin,
                           uint8_t target) {
-  // Reject a wrong-target, relocated, or oversized image before clearing the
+  // Reject an invalid, relocated, or oversized image before clearing the
   // boot bit or writing any application/configuration flash.
   QString validationError;
   if (!validateFirmwareImage(image, fw, true, imageOrigin, &validationError)) {
-    fprintf(stderr, "%s\n", qPrintable(validationError));
-    return 3;
-  }
-
-  const QByteArray connectedFilename = readFilename(sp, fw);
-  if (!validateFirmwareTarget(image, fw, connectedFilename,
-                              &validationError)) {
     fprintf(stderr, "%s\n", qPrintable(validationError));
     return 3;
   }
@@ -636,24 +629,6 @@ static int cmdProtocolSelftest() {
     return 1;
   }
 
-  QByteArray targetImage(64, (char)0xff);
-  targetImage.replace(0, parsed.size(), parsed);
-  target.devinfo_v3.filename_start = 0x1020;
-  const QByteArray targetName("TARGET_F051", 11);
-  targetImage.replace(32, targetName.size(), targetName);
-  targetImage[32 + targetName.size()] = '\0';
-  QByteArray connectedName(32, '\0');
-  connectedName.replace(0, targetName.size(), targetName);
-  if (!validateFirmwareTarget(targetImage, target, connectedName,
-                              &validationError)) {
-    return 1;
-  }
-  connectedName.replace(0, 5, "OTHER");
-  if (validateFirmwareTarget(targetImage, target, connectedName,
-                             &validationError) ||
-      !validationError.contains("target mismatch")) {
-    return 1;
-  }
   printf("PROTOCOL SELFTEST PASSED\n");
   return 0;
 }

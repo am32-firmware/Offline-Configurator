@@ -822,8 +822,7 @@ bool Widget::loadFirmwareImage(QByteArray &image, QString &error) {
   }
   if (!validateFirmwareImage(image, *four_way, originKnown, origin, &error))
     return false;
-  return validateFirmwareTarget(image, *four_way, connected_firmware_name,
-                                &error);
+  return true;
 }
 
 void Widget::resetESC() {
@@ -1058,7 +1057,6 @@ uint16_t Widget::filenameReadAddress() { return four_way->filenameReadAddress();
 
 bool Widget::connectMotor(uint8_t motor) {
   uint16_t buffer_length = 48;
-  connected_firmware_name.clear();
 
   ui->escStatusLabel->setText("Connecting to ESC...");
   ui->escStatusLabel_2->setText("Connecting to ESC...");
@@ -1179,7 +1177,6 @@ bool Widget::connectMotor(uint8_t motor) {
     *input_buffer = fileNameData + eepromData;
   }
 
-  connected_firmware_name = input_buffer->left(32);
   QString name;  // 2 bytes
   name.append(QChar(input_buffer->at(0)));
   name.append(QChar(input_buffer->at(1)));

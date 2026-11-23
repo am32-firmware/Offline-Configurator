@@ -279,7 +279,6 @@ class Widget : public QWidget {
     CRC_ERROR
 
   };
-  QByteArray connected_firmware_name;
   bool parseMSPMessage = true;
   bool more_to_come = false;
   bool timerdone = false;

@@ -180,22 +180,21 @@ def main():
               (label, 'OK' if ok else 'FAIL', elapsed), flush=True)
         results.append((label, ok, detail, elapsed))
 
-        # Same-MCU images can have incompatible gate/pin maps. The embedded
-        # FILE_NAME must match the connected ESC before any flash safety write.
+        # A different embedded FILE_NAME must not block an otherwise valid image.
         wrong_target = os.path.join(temp, 'fw_wrong_64k.hex')
         make_hex(wrong_target, 64, target_name='AM32_WRONG_L431')
         for mode in ('direct', '4way'):
-            label = '%-6s wrong-target' % mode
+            label = '%-6s renamed-target' % mode
             print('=== %s ===' % label, flush=True)
             started = time.time()
             rc, output = run_cell(cli, mode, 'new', 64, wrong_target)
             elapsed = time.time() - started
-            ok = (rc == 3 and 'firmware target mismatch' in output and
-                  'flashed ' not in output)
+            ok = (rc == 0 and 'SUITE PASSED' in output and
+                  'flashed ' in output)
             if not ok:
                 failed = True
                 print(output)
-            detail = 'refused before flash' if ok else 'wrong image accepted'
+            detail = 'renamed target flashed' if ok else 'renamed target failed'
             print('--- %s: %s (%.1fs)' %
                   (label, 'OK' if ok else 'FAIL', elapsed), flush=True)
             results.append((label, ok, detail, elapsed))
