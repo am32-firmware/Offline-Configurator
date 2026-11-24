@@ -613,15 +613,6 @@ static int cmdProtocolSelftest() {
                             &validationError)) {
     return 1;
   }
-  QByteArray badStack = parsed;
-  badStack[0] = 0x00;
-  badStack[1] = 0x10;
-  badStack[2] = 0x00;
-  badStack[3] = 0x10;
-  if (validateFirmwareImage(badStack, target, true, 0x08001000u,
-                            &validationError)) {
-    return 1;
-  }
   QByteArray oversized((int)target.applicationCapacity() + 1, (char)0xff);
   oversized.replace(0, parsed.size(), parsed);
   if (validateFirmwareImage(oversized, target, true, 0x08001000u,
@@ -629,6 +620,16 @@ static int cmdProtocolSelftest() {
     return 1;
   }
 
+  // Validation must not depend on CPU instructions or an ARM vector table.
+  for (int byte = 0; byte <= 255; ++byte) {
+    QByteArray arbitraryStartup(16, (char)byte);
+    if (!validateFirmwareImage(arbitraryStartup, target, true, 0x1000u,
+                               &validationError))
+      return 1;
+  }
+  if (validateFirmwareImage(QByteArray(), target, true, 0x1000u,
+                            &validationError))
+    return 1;
   printf("PROTOCOL SELFTEST PASSED\n");
   return 0;
 }
