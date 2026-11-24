@@ -877,6 +877,7 @@ void Widget::on_writeBinary_clicked() {
   if (!loadFirmwareImage(line, loadError)) {
     ui->StatusLabel->setText(loadError);
     ui->escStatusLabel->setText("Firmware validation failed");
+    QMessageBox::warning(this, tr("Firmware validation failed"), loadError);
     return;
   }
 
