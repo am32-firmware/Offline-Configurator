@@ -640,6 +640,38 @@ bool Widget::readDirectRegion(uint16_t address, int size, QByteArray &out) {
   return true;
 }
 
+bool Widget::waitForFourWayReply(QByteArray &payload, int timeoutMs) {
+  payload.clear();
+  QByteArray response;
+  QElapsedTimer timer;
+  timer.start();
+  while (timer.elapsed() < timeoutMs) {
+    response += m_serial->readAll();
+    while (!response.isEmpty()) {
+      const int marker = response.indexOf(char(0x2e));
+      if (marker < 0) {
+        response.clear();
+        break;
+      }
+      response.remove(0, marker);
+      if (response.size() < 5)
+        break;
+      const int length = (uint8_t)response[4];
+      const int frameSize = (length == 0 ? 256 : length) + 8;
+      if (response.size() < frameSize)
+        break;
+      const QByteArray frame = response.left(frameSize);
+      response.remove(0, frameSize);
+      if (four_way->parseFourWayResponse(frame, payload))
+        return true;
+    }
+    const int remaining = timeoutMs - (int)timer.elapsed();
+    if (remaining > 0)
+      m_serial->waitForReadyRead(remaining);
+  }
+  return false;
+}
+
 bool Widget::readEepromImage(QByteArray &out) {
   static const int preserveSize = 1024;
   static const int chunkSize = 256;
@@ -657,12 +689,8 @@ bool Widget::readEepromImage(QByteArray &out) {
       input_buffer->clear();
       writeData(four_way->makeFourWayReadCommand(chunkSize, address));
       m_serial->waitForBytesWritten(500);
-      while (m_serial->waitForReadyRead(1000)) {
-      }
-      readData();
-      if (four_way->ack_required || input_buffer->size() != chunkSize)
+      if (!waitForFourWayReply(chunk) || chunk.size() != chunkSize)
         return false;
-      chunk = *input_buffer;
     }
     out += chunk;
   }
@@ -687,10 +715,8 @@ bool Widget::writeEepromImage(const QByteArray &image) {
     } else {
       writeData(four_way->makeFourWayWriteCommand(chunk, chunk.size(), address));
       m_serial->waitForBytesWritten(500);
-      while (m_serial->waitForReadyRead(1000)) {
-      }
-      readData();
-      if (four_way->ack_required)
+      QByteArray payload;
+      if (!waitForFourWayReply(payload))
         return false;
     }
   }
@@ -861,6 +887,10 @@ void Widget::on_writeBinary_clicked() {
 
   QByteArray eeprom_out = eeprom_buffer->left(48);
   eeprom_out[0] = 0x00;
+  ui->escStatusLabel->setText("Preparing flash: preserving settings");
+  ui->escStatusLabel->repaint();
+  ui->progressBar->setFormat("%p%");
+  ui->progressBar->setValue(0);
   if (!writeEepromPreserving(0, eeprom_out)) {
     ui->escStatusLabel->setText("Unable to set safety bit");
     return;
@@ -899,18 +929,12 @@ void Widget::on_writeBinary_clicked() {
     }
 
     const int completed = offset + logicalSize;
-    ui->progressBar->setValue((int)((int64_t)completed * 100 / sizeofBin));
+    ui->progressBar->setValue((int)((int64_t)completed * 99 / sizeofBin));
     QApplication::processEvents();
   }
 
-  QString verifyError;
-  if (!verifyFirmwareImage(line, verifyError)) {
-    ui->StatusLabel->setText(verifyError);
-    ui->escStatusLabel_2->setText("FLASH VERIFY FAILURE");
-    return;
-  }
-
-  ui->progressBar->setValue(0);
+  ui->escStatusLabel->setText("Restoring settings");
+  ui->escStatusLabel->repaint();
   if ((eeprom_buffer->at(1) < (char)0x03) ||
       (eeprom_buffer->at(2) == char(0x00))) {
     if (!sendFirstEeprom(0)) {
@@ -918,6 +942,7 @@ void Widget::on_writeBinary_clicked() {
       return;
     }
     ui->escStatusLabel_2->setText("FLASH PROGRAMMED");
+    ui->progressBar->setValue(100);
     resetESC();
     return;
   }
@@ -930,6 +955,9 @@ void Widget::on_writeBinary_clicked() {
   }
   ui->escStatusLabel->setText("WRITE EEPROM SUCCESSFUL");
   ui->escStatusLabel_2->setText("FLASH PROGRAMMED");
+  ui->progressBar->setValue(100);
+  if (four_way->direct)
+    resetESC();
 }
 
 bool Widget::getMusic() {
@@ -984,6 +1012,8 @@ bool Widget::writeMusic() {
 
 bool Widget::verifyFirmwareImage(const QByteArray &image, QString &error) {
   error.clear();
+  ui->progressBar->setFormat("%p%");
+  ui->progressBar->setValue(0);
   const int binSize = image.size();
   for (int offset = 0; offset < binSize; offset += 128) {
     const int amount = qMin(128, binSize - offset);

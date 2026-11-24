@@ -257,6 +257,7 @@ class Widget : public QWidget {
   QByteArray directReply(const QByteArray &command, int replySize,
                          int idleMs = 200, int totalMs = 2000);
   bool readDirectRegion(uint16_t address, int size, QByteArray &out);
+  bool waitForFourWayReply(QByteArray &payload, int timeoutMs = 1000);
   bool readEepromImage(QByteArray &out);
   bool writeEepromImage(const QByteArray &image);
   bool writeEepromPreserving(int offset, const QByteArray &replacement);
